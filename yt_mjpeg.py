@@ -193,7 +193,7 @@ def set_page(url):
     PAGE_URL = url
     state['duration'] = 0
     state['seek_base'] = 0.0
-    fetch_duration()
+    threading.Thread(target=fetch_duration, daemon=True).start()
     new_session(0)
 
 
@@ -653,19 +653,31 @@ def start_ff():
         if state["gen"] != gen_now:
             return
         attempt += 1
-        state["err"] = "403 tentativo %d" % attempt
         state["ff"] = subprocess.Popen(ffmpeg_cmd(vsrc, asrc, pos))
-        time.sleep(min(30, 2 * attempt))
-        if state["ff"].poll() is None:
+        # release lock while waiting for ffmpeg to start
+        lock.release()
+        try:
+            time.sleep(min(30, 2 * attempt))
+        finally:
+            lock.acquire()
+        if state["gen"] != gen_now:
+            return
+        if state["ff"] and state["ff"].poll() is None:
             state["err"] = ""
             break
         print("ffmpeg morto, retry %d" % attempt, flush=True)
         stop_ff()
         ensure_fifo(FIFO_V)
         try:
-            urls = ytdlp_urls()
+            lock.release()
+            try:
+                urls = ytdlp_urls()
+            finally:
+                lock.acquire()
         except Exception as e:
             state["err"] = str(e)
+            return
+        if state["gen"] != gen_now:
             return
         vsrc = urls[0]
         asrc = urls[1] if len(urls) > 1 else urls[0]
@@ -750,7 +762,7 @@ HTML = """<!doctype html>
 <div id="hud"></div>
 <div id="overlay">
   <div id="msg">Loading...</div>
-  <div id="ver" style="position:fixed;left:12px;bottom:12px;z-index:40;color:#aaa;font-size:13px">11.14b</div>
+  <div id="ver" style="position:fixed;left:12px;bottom:12px;z-index:40;color:#aaa;font-size:13px">11.15</div>
 <button id="go" type="button">&#9654;</button>
 </div>
 <div id="prog"><div id="track"><i id="fill"></i></div></div>
@@ -829,7 +841,16 @@ function pollRate(){
     var v = parseFloat(p[1]);
     if (!isNaN(v) && v > 0) rateMb = v;
     var hud = document.getElementById('hud');
-    if (hud) hud.textContent = 'browser ' + frames.length + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '');
+    if (hud) {
+      var desync = '';
+      if (actx && syncOrigin && drawnT > 0) {
+        var ear = earTime();
+        var diff = ear - drawnT;
+        if (Math.abs(diff) > 0.15) desync = (diff > 0 ? '  audio avanti ' : '  video avanti ') + Math.abs(diff).toFixed(1) + 's';
+        else desync = '  sync ok';
+      }
+      hud.textContent = 'browser ' + frames.length + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync;
+    }
   }).catch(function(){});
 }
 function ui(line){
@@ -882,12 +903,13 @@ function preload(auto){
     if (my !== gen) return;
     fetch('/status').then(function(r){ return r.text(); }).then(function(err){
       if (my !== gen) return;
-      if (err) {
+      if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
         msg.textContent = err;
         go.style.display = 'block';
         ui(err);
         return;
       }
+      if (err) { setTimeout(poll, 800); return; }
       fetch('/ready').then(function(r){ return r.text(); }).then(function(t){
         if (my !== gen) return;
         if (t === 'ok') { msg.textContent = 'In attesa del play'; go.style.display = 'block'; }
@@ -945,13 +967,13 @@ function startVideoBuf(){
   }).catch(function(){});
 }
 var audioUrl = '';
-function stallPlay(){
+function stallPlay(reason){
   if (!stalled) {
     stalled = true;
     stopClock();
     if (actx && actx.state === 'running') actx.suspend();
   }
-  showStatus('fermo, restano ' + (frames.length / FPS).toFixed(1) + 's di frame');
+  showStatus(reason || ('fermo, restano ' + (frames.length / FPS).toFixed(1) + 's di frame'));
 }
 function resumePlay(){
   stalled = false;
@@ -1043,6 +1065,26 @@ function showVideo(){
       stallPlay();
       showStatus('buffer ' + frames.length + ', fermo fino a 1 minuto');
       return;
+    }
+    if (actx && syncOrigin && audioOn && !userPaused) {
+      var ear = earTime();
+      if (ear > drawnT + 0.5 && frames.length > FPS * 2) {
+        overlay.style.display = 'flex';
+        msg.style.display = 'block';
+        msg.textContent = 'riallineamento in corso';
+        go.style.display = 'none';
+        while (frames.length > 2 && drawnT + 1/FPS < ear - 0.1) {
+          frames.shift();
+          drawnT += 1/FPS;
+          shownFrames++;
+        }
+        pos = frameBase + drawnT;
+        draw();
+        if (Math.abs(ear - drawnT) < 0.3) overlay.style.display = 'none';
+        return;
+      } else if (overlay.style.display === 'flex' && msg.textContent === 'riallineamento in corso') {
+        overlay.style.display = 'none';
+      }
     }
     if (stalled) {
       if (frames.length < FPS * 60) {
@@ -1184,7 +1226,7 @@ function startBoth(){
   });
     var watch = setInterval(function(){
       fetch('/status').then(function(r){ return r.text(); }).then(function(err){
-        if (err && (err.indexOf('403') === 0 || err.indexOf('Cookie') === 0)) { msg.textContent = err; ui(err); if (err.indexOf('dopo') >= 0) clearInterval(watch); }
+        if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) { msg.textContent = err; ui(err); clearInterval(watch); }
       });
       fetch('/buf').then(function(r){ return r.text(); }).then(function(t){
         var parts = t.split(' ');
@@ -1225,7 +1267,7 @@ function togglePlay(){
       if (actx && actx.state === 'suspended') actx.resume();
       flushHeldAudio();
       startClock();
-      nextFrameAt = performance.now();
+      playOrigin = performance.now() - drawnT * 1000;
       ui('ripresa, buffer ' + frames.length);
     }
   }).catch(function(){
@@ -1239,7 +1281,7 @@ function togglePlay(){
       if (actx && actx.state === 'suspended') actx.resume();
       flushHeldAudio();
       startClock();
-      nextFrameAt = performance.now();
+      playOrigin = performance.now() - drawnT * 1000;
     }
   });
 }
@@ -1266,12 +1308,6 @@ function beginAt(sec){
       pollRate();
       fetch('/status').then(function(r){ return r.text(); }).then(function(err){
         if (my !== gen) return;
-        if (err && err.indexOf('403') === 0) {
-          overlay.style.display = 'flex';
-          msg.style.display = 'block';
-          msg.textContent = err;
-          ui(err);
-        }
         if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
           blocked = true;
           clearInterval(fillWait);
@@ -1442,16 +1478,7 @@ class Handler(BaseHTTPRequestHandler):
             cur = PAGE_URL.split("v=")[-1][:11] if "v=" in PAGE_URL else ""
             items = []
             seen = set()
-            if q:
-                items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
-                for vid, title, kind, url in search_yt(q):
-                    if kind == "channel":
-                        items.append(
-                            '<a class="card" href="/channel?id=%s"><span>Canale: %s</span></a>'
-                            % (vid, title.replace("<", ""))
-                        )
-                    else:
-                        items.extend(cards([(vid, title)], seen, cur))
+            # collect queries to run in parallel
             shown_q = []
             for query in recent:
                 if query == q or query in shown_q:
@@ -1459,15 +1486,32 @@ class Handler(BaseHTTPRequestHandler):
                 if len(shown_q) >= 3:
                     break
                 shown_q.append(query)
+            all_queries = ([q] if q else []) + shown_q
+            # prefetch all searches + related + account in parallel
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                search_futures = {query: pool.submit(search_yt, query) for query in all_queries}
+                related_future = pool.submit(related_of, cur) if cur else None
+                account_future = pool.submit(account_sections)
+            if q:
+                items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
+                for vid, title, kind, url in search_futures[q].result():
+                    if kind == "channel":
+                        items.append(
+                            '<a class="card" href="/channel?id=%s"><span>Canale: %s</span></a>'
+                            % (vid, title.replace("<", ""))
+                        )
+                    else:
+                        items.extend(cards([(vid, title)], seen, cur))
+            for query in shown_q:
                 items.append("<h2>%s</h2>" % query.replace("<", ""))
-                for vid, title, kind, url in search_yt(query):
+                for vid, title, kind, url in search_futures[query].result():
                     if kind == "channel":
                         continue
                     items.extend(cards([(vid, title)], seen, cur))
-            if cur:
+            if cur and related_future:
                 items.append("<h2>Suggeriti per questo video</h2>")
-                items.extend(cards(related_of(cur), seen, cur))
-            for name, rows in account_sections():
+                items.extend(cards(related_future.result(), seen, cur))
+            for name, rows in account_future.result():
                 if name.startswith("<"):
                     items.append(name)
                     continue
@@ -1700,7 +1744,8 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 self.send_header("Location", "/home")
                 self.end_headers()
                 return
-            fetch_duration()
+            if not state["duration"]:
+                threading.Thread(target=fetch_duration, daemon=True).start()
             cancel_stop()
             try:
                 want = float(tpos or 0)
