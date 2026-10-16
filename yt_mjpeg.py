@@ -13,7 +13,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.17"
+VERSION = "11.18"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -940,7 +940,7 @@ function sliceBuf(buf, skipSec){
 }
 function scheduleBuf(buf){
   if (!buf) return;
-  if (!audioArm || !actx) { if (audioHold.length < 6) audioHold.push(buf); return; }
+  if (!audioArm || !actx) { if (audioHold.length < 30) audioHold.push(buf); return; }
   var frameT = drawnT;
   if (audioCursor + 0.4 < frameT) {
     var late = frameT - audioCursor;
@@ -950,7 +950,7 @@ function scheduleBuf(buf){
     buf = cut;
     if (!buf) return;
   }
-  if (audioCursor > frameT + 2) { if (audioHold.length < 6) audioHold.push(buf); return; }
+  if (audioCursor > frameT + 2) { if (audioHold.length < 30) audioHold.push(buf); return; }
   var when = syncOrigin + audioCursor;
   if (when < actx.currentTime - 0.2) { audioCursor += buf.duration; return; }
   var src = actx.createBufferSource();
@@ -1012,7 +1012,7 @@ function showVideo(){
     pollRate();
     if (frames.length < FPS * 5) {
       stallPlay();
-      showStatus('buffer ' + frames.length + ', fermo fino a 1 minuto');
+      showStatus('buffer ' + frames.length + ', carico');
       return;
     }
     if (actx && syncOrigin && audioOn && !userPaused) {
@@ -1036,12 +1036,23 @@ function showVideo(){
       }
     }
     if (stalled) {
-      if (frames.length < FPS * 60) {
-        showStatus('fermo a ' + frames.length + ', carico 1 minuto');
+      if (frames.length < FPS * 10) {
+        showStatus('fermo a ' + frames.length + ', carico buffer');
         return;
       }
       resumePlay();
       playOrigin = performance.now() - drawnT * 1000;
+      // resync audio dopo lo stallo
+      for (var j = 0; j < audioSources.length; j++) {
+        try { audioSources[j].stop(); } catch (e) {}
+      }
+      audioSources = [];
+      audioHold = [];
+      if (actx) {
+        syncOrigin = actx.currentTime;
+        audioArm = syncOrigin;
+        audioCursor = 0;
+      }
     }
     if (painting) return;
     var elapsed = (performance.now() - playOrigin) / 1000;
@@ -1278,8 +1289,8 @@ function beginAt(sec){
         return;
       }
       var slow = rateMb > 0 && rateMb < 1;
-      var need = FPS * 60;
-      showStatus(slow ? 'linea lenta: carico fino a 5000 frame' : 'caricamento');
+      var need = slow ? FPS * 12 : FPS * 5;
+      showStatus(slow ? 'linea lenta: carico ' + need + ' frame' : 'caricamento');
       if (frames.length >= need) {
         clearInterval(fillWait);
         showVideo();
