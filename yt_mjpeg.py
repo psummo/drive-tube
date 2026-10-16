@@ -12,6 +12,9 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+VERSION = "11.16"
+UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
+
 def find_cfg():
     here = os.path.dirname(os.path.abspath(__file__))
     cands = [
@@ -762,7 +765,7 @@ HTML = """<!doctype html>
 <div id="hud"></div>
 <div id="overlay">
   <div id="msg">Loading...</div>
-  <div id="ver" style="position:fixed;left:12px;bottom:12px;z-index:40;color:#aaa;font-size:13px">11.15</div>
+  <div id="ver" style="position:fixed;left:12px;bottom:12px;z-index:40;color:#aaa;font-size:13px">__VER__</div>
 <button id="go" type="button">&#9654;</button>
 </div>
 <div id="prog"><div id="track"><i id="fill"></i></div></div>
@@ -1388,6 +1391,43 @@ function drawCfg(){
     });
     box.appendChild(row);
   });
+  var upd = document.createElement('div');
+  upd.className = 'row';
+  upd.innerHTML = '<p><b>AGGIORNAMENTI</b><small id="updtxt">Versione ' + document.getElementById('ver').textContent + '</small></p><button type="button" id="updbtn">Controlla</button>';
+  var updbtn = upd.querySelector('#updbtn');
+  var updtxt = upd.querySelector('#updtxt');
+  updbtn.onclick = function(ev){
+    ev.stopPropagation();
+    if (updbtn.getAttribute('data-mode') === 'install') {
+      updbtn.disabled = true;
+      updtxt.textContent = 'installo, il server si riavvia...';
+      fetch('/update/install').then(function(r){ return r.json(); }).then(function(j){
+        if (!j.ok) { updtxt.textContent = 'errore: ' + j.error; updbtn.disabled = false; return; }
+        updtxt.textContent = 'installata ' + j.version + ', ricarico...';
+        var tries = 0;
+        (function wait(){
+          setTimeout(function(){
+            fetch('/health').then(function(r){ if (r.ok) location.reload(); else throw 0; }).catch(function(){ if (++tries < 40) wait(); else updtxt.textContent = 'riavvio lento, ricarica la pagina'; });
+          }, 1500);
+        })();
+      }).catch(function(){ updtxt.textContent = 'errore di rete'; updbtn.disabled = false; });
+      return;
+    }
+    updbtn.disabled = true;
+    updtxt.textContent = 'controllo...';
+    fetch('/update/check').then(function(r){ return r.json(); }).then(function(j){
+      updbtn.disabled = false;
+      if (j.error) { updtxt.textContent = j.error; return; }
+      if (j.newer) {
+        updtxt.textContent = 'Nuova versione ' + j.latest + ' (hai ' + j.current + ')';
+        updbtn.textContent = 'Installa';
+        updbtn.setAttribute('data-mode', 'install');
+      } else {
+        updtxt.textContent = 'Sei aggiornato (' + j.current + ')';
+      }
+    }).catch(function(){ updbtn.disabled = false; updtxt.textContent = 'errore di rete'; });
+  };
+  box.appendChild(upd);
   var save = document.createElement('button');
   save.id = 'savecfg';
   save.type = 'button';
@@ -1462,6 +1502,71 @@ function loadNext(){
 loadNext();
 </script>
 """
+
+
+def _ver_key(v):
+    nums = []
+    for part in v.replace("-", ".").split("."):
+        digits = "".join(c for c in part if c.isdigit())
+        nums.append(int(digits) if digits else 0)
+    return tuple(nums)
+
+
+def fetch_remote_source():
+    import urllib.request
+    req = urllib.request.Request(UPDATE_URL + "?t=%d" % int(time.time()), headers={"User-Agent": "drive-tube"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read().decode("utf-8")
+
+
+def remote_version(src):
+    import re
+    m = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M)
+    return m.group(1) if m else ""
+
+
+def check_update():
+    try:
+        remote = remote_version(fetch_remote_source())
+    except Exception as e:
+        return {"current": VERSION, "error": "controllo fallito: %s" % e}
+    if not remote:
+        return {"current": VERSION, "error": "versione remota non trovata"}
+    return {"current": VERSION, "latest": remote, "newer": _ver_key(remote) > _ver_key(VERSION)}
+
+
+def install_update():
+    import py_compile
+    import shutil
+    import tempfile
+    src = fetch_remote_source()
+    remote = remote_version(src)
+    if not remote:
+        raise RuntimeError("versione remota non trovata")
+    if _ver_key(remote) <= _ver_key(VERSION):
+        raise RuntimeError("gia' aggiornato (%s)" % VERSION)
+    me = os.path.abspath(__file__)
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, dir=os.path.dirname(me), encoding="utf-8")
+    try:
+        tmp.write(src)
+        tmp.close()
+        py_compile.compile(tmp.name, doraise=True)
+        shutil.copy2(me, me + ".bak")
+        os.replace(tmp.name, me)
+    finally:
+        if os.path.exists(tmp.name):
+            os.remove(tmp.name)
+    print("aggiornato %s -> %s, riavvio" % (VERSION, remote), flush=True)
+    return remote
+
+
+def restart_self():
+    time.sleep(1.0)
+    try:
+        stop_ff()
+    except Exception:
+        pass
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1709,6 +1814,33 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.wfile.write((state.get("err") or "").encode("utf-8"))
             return
 
+        if path == "/update/check":
+            body = json.dumps(check_update())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
+
+        if path == "/update/install":
+            try:
+                new = install_update()
+                out, code = {"ok": True, "version": new}, 200
+            except Exception as e:
+                out, code = {"ok": False, "error": str(e)}, 500
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(out).encode())
+            if code == 200:
+                try:
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                threading.Thread(target=restart_self, daemon=True).start()
+            return
+
         if path == "/health":
             self.send_response(200)
             self.end_headers()
@@ -1754,7 +1886,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             if not (ffmpeg_alive() and abs(want - now_pos()) < 8):
                 new_session(want)
             vid = PAGE_URL.split("v=")[-1][:11] if "v=" in PAGE_URL else ""
-            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(FPS)).replace("__SLACK__", str(SLACK_MS)).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(CFG)).replace("WATCHID", vid).encode("utf-8")
+            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(FPS)).replace("__SLACK__", str(SLACK_MS)).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(CFG)).replace("__VER__", VERSION).replace("WATCHID", vid).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

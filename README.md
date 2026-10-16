@@ -8,5 +8,8 @@ Server Python single-file: yt-dlp + ffmpeg trasformano lo stream in MJPEG e MP3,
 
 Richiede `yt-dlp` e `ffmpeg`. Porta e qualità si configurano in `yt_mjpeg.conf`.
 
+## Aggiornamento dall'app
+Nel pannello impostazioni (ingranaggio) c'è "Aggiornamenti": **Controlla** confronta la versione con quella su `main`, **Installa** scarica il file, ne verifica la sintassi, salva il backup `yt_mjpeg.py.bak` e riavvia il server. Con systemd e `Restart=always` il riavvio è comunque garantito.
+
 ## Rilasci
 Si pubblicano con un tag `vX.Y`: GitHub Actions crea la release con `yt_mjpeg.py` e `yt_mjpeg.conf`.
