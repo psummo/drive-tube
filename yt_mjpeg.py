@@ -13,7 +13,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.19"
+VERSION = "11.20"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1041,16 +1041,28 @@ function showVideo(){
       }
       resumePlay();
       playOrigin = performance.now() - drawnT * 1000;
-      // resync audio dopo lo stallo
-      for (var j = 0; j < audioSources.length; j++) {
-        try { audioSources[j].stop(); } catch (e) {}
-      }
-      audioSources = [];
-      audioHold = [];
-      if (actx) {
-        syncOrigin = actx.currentTime;
-        audioArm = syncOrigin;
-        audioCursor = 0;
+      // resync audio: restart stream per allineamento pulito
+      if (audioOn && audioUrl) {
+        var stallGen = gen;
+        stopAudio();
+        fetch('/ctrl?flush_audio=1').then(function(){
+          if (stallGen !== gen) return;
+          audioUrl = '/stream.mp3?t=' + Date.now();
+          playAudioStream(audioUrl);
+          if (actx) {
+            var d = drawnT;
+            syncOrigin = actx.currentTime - d;
+            audioArm = syncOrigin;
+            audioCursor = d;
+            audioNext = actx.currentTime;
+          }
+        });
+      } else {
+        for (var j = 0; j < audioSources.length; j++) {
+          try { audioSources[j].stop(); } catch (e) {}
+        }
+        audioSources = [];
+        audioHold = [];
       }
     }
     if (audioHold.length && audioArm) flushHeldAudio();
@@ -1823,15 +1835,15 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
 
         if path == "/ctrl":
-            if "pos" in q:
+            if "flush_audio" in q:
+                state["a_q"].clear()
+                msg = "audio flushed"
+            elif "pos" in q:
                 cancel_stop()
                 want = float(q["pos"][0])
-                changed = apply_settings(self.headers.get("Cookie"))
-                if not changed and ffmpeg_alive() and abs(want - now_pos()) < 8:
-                    msg = "tengo ffmpeg %.0f" % now_pos()
-                else:
-                    new_session(want)
-                    msg = "seek %.0f" % state["seek_base"]
+                apply_settings(self.headers.get("Cookie"))
+                new_session(want)
+                msg = "seek %.0f" % state["seek_base"]
             elif "pause" in q:
                 if not state["paused"]:
                     state["seek_base"] = now_pos()
