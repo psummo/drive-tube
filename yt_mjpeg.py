@@ -13,7 +13,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.18"
+VERSION = "11.19"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -940,7 +940,7 @@ function sliceBuf(buf, skipSec){
 }
 function scheduleBuf(buf){
   if (!buf) return;
-  if (!audioArm || !actx) { if (audioHold.length < 30) audioHold.push(buf); return; }
+  if (!audioArm || !actx) { if (audioHold.length < 30) { audioHold.push(buf); if (actx) audioNext = actx.currentTime + audioHold.reduce(function(s,b){ return s + b.duration; }, 0); } return; }
   var frameT = drawnT;
   if (audioCursor + 0.4 < frameT) {
     var late = frameT - audioCursor;
@@ -950,7 +950,6 @@ function scheduleBuf(buf){
     buf = cut;
     if (!buf) return;
   }
-  if (audioCursor > frameT + 2) { if (audioHold.length < 30) audioHold.push(buf); return; }
   var when = syncOrigin + audioCursor;
   if (when < actx.currentTime - 0.2) { audioCursor += buf.duration; return; }
   var src = actx.createBufferSource();
@@ -1054,6 +1053,7 @@ function showVideo(){
         audioCursor = 0;
       }
     }
+    if (audioHold.length && audioArm) flushHeldAudio();
     if (painting) return;
     var elapsed = (performance.now() - playOrigin) / 1000;
     if (drawnT + 1 / FPS > elapsed + 0.04) return;
@@ -1290,8 +1290,10 @@ function beginAt(sec){
       }
       var slow = rateMb > 0 && rateMb < 1;
       var need = slow ? FPS * 12 : FPS * 5;
-      showStatus(slow ? 'linea lenta: carico ' + need + ' frame' : 'caricamento');
-      if (frames.length >= need) {
+      var audioReady = !audioOn || audioHold.length > 0;
+      var elapsed_ms = Date.now() - t0;
+      showStatus(slow ? 'linea lenta: carico ' + need + ' frame' : 'caricamento' + (frames.length >= need && !audioReady ? ' audio' : ''));
+      if (frames.length >= need && (audioReady || elapsed_ms > 6000)) {
         clearInterval(fillWait);
         showVideo();
       }
@@ -1866,7 +1868,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             if not state["has_audio"]:
                 self.send_error(404, "no audio")
                 return
-            state["a_evt"].wait(timeout=AUDIO_BUFFER_SEC + 12)
             self.send_response(200)
             self.send_header("Content-Type", "audio/mpeg")
             self.send_header("Cache-Control", "no-cache")
