@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import html
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -10,165 +11,101 @@ import threading
 import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.16"
+VERSION = "11.17"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
-def find_cfg():
-    here = os.path.dirname(os.path.abspath(__file__))
-    cands = [
-        os.environ.get("YT_CONF") or "",
-        os.path.join(here, "yt_mjpeg.conf"),
-        os.path.expanduser("~/yt_mjpeg.conf"),
-        "/config/yt_mjpeg.conf",
-    ]
-    for path in cands:
-        if path and os.path.isfile(path):
-            return path
-    return os.path.join(here, "yt_mjpeg.conf")
+PORT = int(os.environ.get("YT_PORT") or 8090)
 
-
-def load_cfg(path=None):
-    path = path or find_cfg()
-    cfg = {
-        "PORT": 8090,
-        "HEIGHT": 720,
-        "FPS": 25,
-        "Q": 5,
-        "VIDEO_BUFFER_SEC": 15,
-        "AUDIO_BUFFER_SEC": 8,
-        "DURATION": 0,
-        "SLACK_MS": -400,
-    }
-    try:
-        for line in open(path):
-            line = line.split("#", 1)[0].strip()
-            if not line or "=" not in line:
-                continue
-            k, v = [x.strip() for x in line.split("=", 1)]
-            if k in cfg:
-                cfg[k] = int(v)
-    except FileNotFoundError:
-        pass
-    return cfg
-
-CFG = load_cfg()
-PORT = CFG["PORT"]
+# Impostazioni modificabili dal pannello dell'app. I default stanno qui nel codice;
+# le scelte dell'utente vivono nel cookie "yt_cfg" del browser e, se manca o e'
+# incompleto, si usano i default.
+# (chiave, nome, spiegazione, default, [(valore, etichetta), ...])
+SETTINGS = [
+    ("HEIGHT", "Risoluzione", "Altezza dei frame. Piu' alta e' piu' nitida ma pesa di piu'.", 720,
+     [(360, "360p"), (480, "480p"), (720, "720p"), (1080, "1080p")]),
+    ("FPS", "Fluidita'", "Fotogrammi al secondo.", 15,
+     [(10, "10"), (15, "15"), (20, "20"), (25, "25"), (30, "30")]),
+    ("Q", "Qualita' video", "Compressione JPEG: piu' e' alta, piu' dati servono.", 10,
+     [(15, "Minima"), (10, "Bassa"), (6, "Media"), (3, "Alta")]),
+    ("AUDIO_KBPS", "Qualita' audio", "Bitrate dell'MP3.", 64,
+     [(32, "32k"), (48, "48k"), (64, "64k"), (96, "96k"), (128, "128k"), (192, "192k")]),
+    ("AUDIO_BUFFER_SEC", "Buffer audio", "Secondi di audio caricati prima di partire.", 4,
+     [(2, "2 s"), (4, "4 s"), (8, "8 s"), (15, "15 s")]),
+]
+SETTINGS_UI = [
+    {"key": k, "label": n, "help": h, "options": [[v, l] for v, l in opts]}
+    for k, n, h, d, opts in SETTINGS
+]
+DEFAULTS = {k: d for k, n, h, d, opts in SETTINGS}
+CFG = dict(DEFAULTS)
 HEIGHT = CFG["HEIGHT"]
 FPS = CFG["FPS"]
 Q = CFG["Q"]
-VIDEO_BUFFER_SEC = CFG["VIDEO_BUFFER_SEC"]
+AUDIO_KBPS = CFG["AUDIO_KBPS"]
 AUDIO_BUFFER_SEC = CFG["AUDIO_BUFFER_SEC"]
-DURATION = CFG["DURATION"]
-SLACK_MS = CFG["SLACK_MS"]
-CFG_PATH = find_cfg()
-recent_mem = []
 feed_cache = {}
 
 
-def apply_saved():
-    global HEIGHT, FPS, Q, VIDEO_BUFFER_SEC, AUDIO_BUFFER_SEC, DURATION, SLACK_MS, CFG
-    CFG = load_cfg()
+def cookie_value(header, name):
+    for part in (header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name:
+            return unquote(v)
+    return ""
+
+
+def settings_from_cookie(header):
+    cfg = dict(DEFAULTS)
+    try:
+        data = json.loads(cookie_value(header, "yt_cfg") or "{}")
+    except ValueError:
+        data = {}
+    if isinstance(data, dict):
+        for k, n, h, d, opts in SETTINGS:
+            v = data.get(k)
+            if type(v) is int and v in [o[0] for o in opts]:
+                cfg[k] = v
+    return cfg
+
+
+def apply_settings(header):
+    """Applica le impostazioni del cookie. Ritorna True se sono cambiate."""
+    global CFG, HEIGHT, FPS, Q, AUDIO_KBPS, AUDIO_BUFFER_SEC
+    new = settings_from_cookie(header)
+    if new == CFG:
+        return False
+    CFG = new
     HEIGHT = CFG["HEIGHT"]
     FPS = CFG["FPS"]
     Q = CFG["Q"]
-    VIDEO_BUFFER_SEC = CFG["VIDEO_BUFFER_SEC"]
+    AUDIO_KBPS = CFG["AUDIO_KBPS"]
     AUDIO_BUFFER_SEC = CFG["AUDIO_BUFFER_SEC"]
-    DURATION = CFG["DURATION"]
-    SLACK_MS = CFG["SLACK_MS"]
-    if DURATION:
-        state["duration"] = DURATION
-    new_session(now_pos())
-
-LIMITS = {
-    "PORT": (1, 65535),
-    "HEIGHT": (144, 1080),
-    "FPS": (5, 30),
-    "Q": (2, 31),
-    "VIDEO_BUFFER_SEC": (1, 120),
-    "AUDIO_BUFFER_SEC": (1, 60),
-    "DURATION": (0, 86400),
-    "SLACK_MS": (-5000, 5000),
-}
+    print("impostazioni:", CFG, flush=True)
+    return True
 
 
-def save_cfg(key, value):
-    if key not in LIMITS:
-        raise ValueError("chiave sconosciuta")
-    lo, hi = LIMITS[key]
-    value = max(lo, min(hi, int(value)))
-    lines = []
+def recent_from_cookie(header):
     try:
-        lines = open(CFG_PATH).read().splitlines()
-    except FileNotFoundError:
-        lines = []
-    found = False
-    out = []
-    for line in lines:
-        raw = line.split("#", 1)[0].strip()
-        if raw.startswith(key + " ") or raw.startswith(key + "=") or raw.startswith(key + " ="):
-            out.append("%s = %s" % (key, value))
-            found = True
-        else:
-            out.append(line)
-    if not found:
-        out.append("%s = %s" % (key, value))
-    with open(CFG_PATH, "w") as fh:
-        fh.write("\n".join(out).rstrip() + "\n")
-    return value
+        rows = json.loads(cookie_value(header, "yt_recent") or "[]")
+    except ValueError:
+        return []
+    if not isinstance(rows, list):
+        return []
+    return [x for x in rows if isinstance(x, str) and x][:10]
 
 
-def schedule_restart():
-    def go():
-        print("riavvio dopo modifica config", flush=True)
-        stop_ff()
-        script = os.path.expanduser("~/yt-refresh.sh")
-        if os.path.isfile(script):
-            subprocess.Popen(["bash", script], start_new_session=True)
-        else:
-            log = open(os.path.expanduser("~/yt.log"), "a")
-            subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:], start_new_session=True, stdout=log, stderr=log)
-        os._exit(0)
-    threading.Timer(0.5, go).start()
-
-
-def load_recent():
-    rows = list(recent_mem)
-    try:
-        for line in open(CFG_PATH):
-            raw = line.split("#", 1)[0].strip()
-            if raw.startswith("RECENT="):
-                q = raw.split("=", 1)[1].strip()
-                if q and q not in rows:
-                    rows.append(q)
-    except FileNotFoundError:
-        pass
-    return rows[:10]
-
-
-def push_recent(q):
+def push_recent(q, rows):
     q = (q or "").strip().replace("\n", " ")
     if not q:
-        return load_recent()
-    rows = [q] + [x for x in load_recent() if x.lower() != q.lower()]
-    rows = rows[:10]
-    recent_mem[:] = rows
-    try:
-        kept = []
-        for line in open(CFG_PATH):
-            if not line.split("#", 1)[0].strip().startswith("RECENT="):
-                kept.append(line if line.endswith("\n") else line + "\n")
-        with open(CFG_PATH, "w") as fh:
-            fh.writelines(kept)
-            for row in rows:
-                fh.write("RECENT=%s\n" % row)
-        print("recent salvate", len(rows), flush=True)
-    except Exception as e:
-        print("recent non scritte nel conf:", e, flush=True)
-        user = os.environ.get("USER") or "admin"
-        print("esegui: sudo chown %s %s" % (user, CFG_PATH), flush=True)
-    return rows
+        return rows
+    return ([q] + [x for x in rows if x.lower() != q.lower()])[:10]
+
+
+def recent_cookie_header(rows):
+    return "yt_recent=%s; Max-Age=31536000; Path=/; SameSite=Lax" % quote(json.dumps(rows, ensure_ascii=False), safe="")
+
 
 FIFO_V = "/tmp/yt_vid.mjpg"
 FIFO_A = "/tmp/yt_aud.mp3"
@@ -321,7 +258,7 @@ state = {
     "gen": 0,
     "ff": None,
     "has_audio": False,
-    "duration": DURATION,
+    "duration": 0,
     "v_q": deque(),
     "a_q": deque(),
     "v_evt": threading.Event(),
@@ -542,7 +479,7 @@ def ffmpeg_cmd(vsrc, asrc, pos):
             "-vf", "scale=-2:%d" % HEIGHT, "-r", str(FPS), "-q:v", str(Q),
             "-f", "mjpeg", FIFO_V,
             "-map", "0:a:0", "-vn",
-            "-c:a", "libmp3lame", "-b:a", "64k",
+            "-c:a", "libmp3lame", "-b:a", "%dk" % AUDIO_KBPS,
             "-f", "mp3", FIFO_A,
         ]
     if asrc:
@@ -598,7 +535,7 @@ def ffmpeg_cmd(vsrc, asrc, pos):
             "-c:a",
             "libmp3lame",
             "-b:a",
-            "64k",
+            "%dk" % AUDIO_KBPS,
             "-f",
             "mp3",
             FIFO_A,
@@ -754,6 +691,15 @@ HTML = """<!doctype html>
   .row small{color:#aaa}
   .row i{min-width:64px;text-align:center;font-style:normal;font-size:20px}
   .row button{width:40px;height:40px;border:0;border-radius:8px;background:#333;color:#fff;font-size:22px}
+  .row button.wide{width:auto;padding:0 14px;font-size:16px}
+  .row2{padding:10px 0;border-bottom:1px solid #333}
+  .row2 p{margin:0 0 8px}
+  .row2 b{display:block}
+  .row2 small{color:#aaa}
+  .opts{display:flex;flex-wrap:wrap;gap:6px}
+  .opts button{min-width:56px;height:40px;padding:0 12px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
+  .opts button.on{background:#fff;color:#000}
+  #resetcfg{width:100%;height:44px;margin-top:10px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
   #logbox{white-space:pre-wrap;font:12px/1.4 monospace;color:#ddd}
   #nexts a, #nexts a:visited, #nexts a:hover{color:#fff;text-decoration:none}
   #savecfg{width:100%;height:48px;margin-top:16px;border:0;border-radius:8px;background:#fff;color:#000;font-size:18px}
@@ -1179,8 +1125,7 @@ function playAudioStream(url){
   function armVideo(){
     if (started || my !== gen) return;
     started = true;
-    if (SLACK_MS > 0) setTimeout(showVideo, SLACK_MS);
-    else showVideo();
+    showVideo();
   }
   return ensureCtx().then(function(){
     audioNext = actx.currentTime + 0.25;
@@ -1352,15 +1297,7 @@ overlay.onclick = function(ev){
 };
 var chromeOn = false;
 var cfgNow = __CFG__;
-var FIELDS = [
-  ['HEIGHT', 120, 'Altezza dei frame. Vale dal prossimo play.', 144, 1080],
-  ['FPS', 1, 'Frame al secondo. 25 vuol dire un fotogramma ogni 40 ms.', 5, 30],
-  ['Q', 1, 'Qualità JPEG. Più basso è più nitido e più pesante.', 2, 31],
-  ['VIDEO_BUFFER_SEC', 1, 'Secondi di video tenuti in coda sul server.', 1, 120],
-  ['AUDIO_BUFFER_SEC', 1, 'Secondi di audio tenuti in coda sul server.', 1, 60],
-  ['DURATION', 30, 'Durata forzata in secondi. 0 = la legge da YouTube.', 0, 86400],
-  ['SLACK_MS', 50, 'Scarto audio in millisecondi. Negativo = audio in anticipo.', -5000, 5000]
-];
+var SETTINGS = __OPTS__;
 function stageClick(ev){
   if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #nexts, #prog')) return;
   if (go.style.display !== 'none') return;
@@ -1372,28 +1309,32 @@ function stageClick(ev){
   }
   togglePlay();
 }
+function saveCfgCookie(){
+  var o = {};
+  SETTINGS.forEach(function(f){ o[f.key] = cfgNow[f.key]; });
+  document.cookie = 'yt_cfg=' + encodeURIComponent(JSON.stringify(o)) + '; max-age=31536000; path=/; samesite=lax';
+}
 function drawCfg(){
   var box = document.getElementById('panel');
   box.innerHTML = '';
-  FIELDS.forEach(function(f){
+  SETTINGS.forEach(function(f){
     var row = document.createElement('div');
-    row.className = 'row';
-    row.innerHTML = '<p><b>' + f[0] + '</b><small>' + f[2] + '</small></p><button type="button" data-d="-1">−</button><i>' + cfgNow[f[0]] + '</i><button type="button" data-d="1">+</button>';
-    row.querySelectorAll('button').forEach(function(b){
-      b.onclick = function(ev){
-        ev.stopPropagation();
-        var v = cfgNow[f[0]] + (b.getAttribute('data-d') === '1' ? f[1] : -f[1]);
-        if (v < f[3]) v = f[3];
-        if (v > f[4]) v = f[4];
-        cfgNow[f[0]] = v;
-        drawCfg();
-      };
+    row.className = 'row2';
+    row.innerHTML = '<p><b>' + f.label + '</b><small>' + f.help + '</small></p><div class="opts"></div>';
+    var opts = row.querySelector('.opts');
+    f.options.forEach(function(o){
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = o[1];
+      if (cfgNow[f.key] === o[0]) b.className = 'on';
+      b.onclick = function(ev){ ev.stopPropagation(); cfgNow[f.key] = o[0]; drawCfg(); };
+      opts.appendChild(b);
     });
     box.appendChild(row);
   });
   var upd = document.createElement('div');
   upd.className = 'row';
-  upd.innerHTML = '<p><b>AGGIORNAMENTI</b><small id="updtxt">Versione ' + document.getElementById('ver').textContent + '</small></p><button type="button" id="updbtn">Controlla</button>';
+  upd.innerHTML = '<p><b>AGGIORNAMENTI</b><small id="updtxt">Versione ' + document.getElementById('ver').textContent + '</small></p><button type="button" class="wide" id="updbtn">Controlla</button>';
   var updbtn = upd.querySelector('#updbtn');
   var updtxt = upd.querySelector('#updtxt');
   updbtn.onclick = function(ev){
@@ -1431,14 +1372,24 @@ function drawCfg(){
   var save = document.createElement('button');
   save.id = 'savecfg';
   save.type = 'button';
-  save.textContent = 'Salva';
+  save.textContent = 'Salva e applica';
   save.onclick = function(ev){
     ev.stopPropagation();
-    var q = FIELDS.map(function(f){ return f[0] + '=' + cfgNow[f[0]]; }).join('&');
-    box.innerHTML = '<p>salvo, svuoto il buffer...</p>';
-    fetch('/save?' + q).then(function(r){ return r.text(); }).then(function(){ location.reload(); });
+    saveCfgCookie();
+    box.innerHTML = '<p>salvo, riparto con le nuove impostazioni...</p>';
+    location.reload();
   };
   box.appendChild(save);
+  var reset = document.createElement('button');
+  reset.id = 'resetcfg';
+  reset.type = 'button';
+  reset.textContent = 'Ripristina i default';
+  reset.onclick = function(ev){
+    ev.stopPropagation();
+    document.cookie = 'yt_cfg=; max-age=0; path=/';
+    location.reload();
+  };
+  box.appendChild(reset);
 }
 function openTab(which){
   document.getElementById('tabcfg').className = which === 'cfg' ? 'on' : '';
@@ -1579,7 +1530,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/home":
             q = (parse_qs(u.query).get("q") or [""])[0]
-            recent = push_recent(q) if q else load_recent()
+            recent = push_recent(q, recent_from_cookie(self.headers.get("Cookie")))
             cur = PAGE_URL.split("v=")[-1][:11] if "v=" in PAGE_URL else ""
             items = []
             seen = set()
@@ -1625,7 +1576,7 @@ class Handler(BaseHTTPRequestHandler):
                 items.append("<h2>%s</h2>" % name)
                 items.extend(cards(rows, seen, cur))
             chips = "".join(
-                '<a class="chip" href="/home?q=%s">%s</a>' % (row.replace('"', ''), row.replace("<", ""))
+                '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
             )
             body = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>home</title>
@@ -1643,30 +1594,19 @@ h2{grid-column:1/-1;font-size:16px;margin:8px 0 0}
 .card span{display:block;padding:8px 0;font-size:15px}
 </style>
 <form action="/home"><input name="q" placeholder="cerca"><button type="submit">cerca</button><a class="back" href="%s" style="background:#fff;color:#000;text-decoration:none;padding:8px 14px;font-size:18px">player</a><a class="back" href="/cookies" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">cookie</a></form>
-<div class="chips" id="chips"></div>
+<div class="chips">%s</div>
 <div class="grid">%s</div>
-<script>
-var key = 'yt-recent';
-var q = new URLSearchParams(location.search).get('q') || '';
-var rows = [];
-try { rows = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) {}
-if (q) rows = [q].concat(rows.filter(function(x){ return x.toLowerCase() !== q.toLowerCase(); })).slice(0, 10);
-localStorage.setItem(key, JSON.stringify(rows));
-document.getElementById('chips').innerHTML = rows.map(function(r){
-  return '<a class="chip" href="/home?q=' + encodeURIComponent(r) + '">' + r.replace(/</g,'') + '</a>';
-}).join('');
-</script>
-</body>""" % (("/?watch=" + cur) if cur else "/home", "".join(items) or "<p>nessuna ricerca recente</p>")
+</body>""" % (("/?watch=" + cur) if cur else "/home", chips, "".join(items) or "<p>nessuna ricerca recente</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Set-Cookie", recent_cookie_header(recent))
             self.end_headers()
             self.wfile.write(body.encode("utf-8"))
             return
 
         if path == "/search":
             q = (parse_qs(u.query).get("q") or [""])[0]
-            if q:
-                push_recent(q)
+            recent = push_recent(q, recent_from_cookie(self.headers.get("Cookie")))
             rows = search_yt(q) if q else []
             items = []
             for row in rows:
@@ -1695,6 +1635,7 @@ button{font-size:18px;padding:8px 14px}
 %s""" % (q.replace("<", ""), "".join(items))
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Set-Cookie", recent_cookie_header(recent))
             self.end_headers()
             self.wfile.write(body.encode("utf-8"))
             return
@@ -1743,32 +1684,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(body.encode("utf-8"))
-            return
-
-        if path == "/config":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(json.dumps(CFG).encode())
-            return
-
-        if path == "/save":
-            try:
-                for key in LIMITS:
-                    if key in q:
-                        save_cfg(key, q[key][0])
-            except Exception as e:
-                self.send_response(400)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(("non salvato: %s" % e).encode())
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"ok")
-            apply_saved()
             return
 
         if path == "/log.txt":
@@ -1862,6 +1777,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
 
         if path in ("/", "/index.html"):
+            cfg_changed = apply_settings(self.headers.get("Cookie"))
             watch = (q.get("watch") or [""])[0]
             tpos = (q.get("t") or ["0"])[0]
             if watch and watch not in PAGE_URL:
@@ -1883,10 +1799,10 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 want = float(tpos or 0)
             except ValueError:
                 want = 0
-            if not (ffmpeg_alive() and abs(want - now_pos()) < 8):
+            if cfg_changed or not (ffmpeg_alive() and abs(want - now_pos()) < 8):
                 new_session(want)
             vid = PAGE_URL.split("v=")[-1][:11] if "v=" in PAGE_URL else ""
-            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(FPS)).replace("__SLACK__", str(SLACK_MS)).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(CFG)).replace("__VER__", VERSION).replace("WATCHID", vid).encode("utf-8")
+            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(FPS)).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(CFG)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("WATCHID", vid).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -1897,7 +1813,8 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             if "pos" in q:
                 cancel_stop()
                 want = float(q["pos"][0])
-                if ffmpeg_alive() and abs(want - now_pos()) < 8:
+                changed = apply_settings(self.headers.get("Cookie"))
+                if not changed and ffmpeg_alive() and abs(want - now_pos()) < 8:
                     msg = "tengo ffmpeg %.0f" % now_pos()
                 else:
                     new_session(want)
@@ -2041,7 +1958,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
 
 
 if __name__ == "__main__":
-    print("conf", CFG_PATH, flush=True)
     fetch_duration()
     print("http://0.0.0.0:%d/  duration=%ss" % (PORT, state["duration"]))
     try:
