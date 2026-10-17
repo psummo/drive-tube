@@ -13,7 +13,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.21"
+VERSION = "11.22"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -263,6 +263,12 @@ state = {
     "a_q": deque(),
     "v_evt": threading.Event(),
     "a_evt": threading.Event(),
+    "ff_gen": -1,
+    "ff_done": -1,
+    "v_made": 0,
+    "a_read": 0,
+    "fails": 0,
+    "rate": 0,
 }
 
 
@@ -398,6 +404,7 @@ def stop_ff():
         except Exception:
             pass
     state["ff"] = None
+    state["rate"] = 0
     state["v_q"].clear()
     state["a_q"].clear()
     state["v_evt"].clear()
@@ -412,22 +419,43 @@ def ensure_fifo(path):
     os.mkfifo(path)
 
 
+def unblock_fifo(path):
+    # se un pump e' fermo su open() perche' ffmpeg e' morto prima di aprire
+    # l'uscita, apro e chiudo il lato scrittura: il pump riceve EOF ed esce
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+    except OSError:
+        pass
+
+
+V_CAP = 6000
+
+
 def pump_jpegs(gen, path):
     try:
         with open(path, "rb") as fh:
             buf = b""
             nbytes = 0
+            idle = 0.0
             t0 = time.perf_counter()
             while state["gen"] == gen:
+                if len(state["v_q"]) >= V_CAP:
+                    # coda piena: smetto di leggere e ffmpeg si ferma da solo.
+                    # Prima qui si scartavano frame e il video saltava avanti.
+                    time.sleep(0.1)
+                    idle += 0.1
+                    continue
                 chunk = fh.read(65536)
                 if not chunk:
                     break
                 nbytes += len(chunk)
                 now = time.perf_counter()
                 if now - t0 >= 5:
-                    print("video %.1f MB/s coda %d frame" % (nbytes / (now - t0) / 1e6, len(state["v_q"])), flush=True)
-                    state["rate"] = nbytes / (now - t0) / 1e6
+                    state["rate"] = nbytes / max(0.5, now - t0 - idle) / 1e6
+                    print("video %.1f MB/s coda %d frame" % (state["rate"], len(state["v_q"])), flush=True)
                     nbytes = 0
+                    idle = 0.0
                     t0 = now
                 buf += chunk
                 while True:
@@ -438,29 +466,30 @@ def pump_jpegs(gen, path):
                             buf = buf[s:]
                         break
                     state["v_q"].append(buf[s : e + 2])
+                    state["v_made"] += 1
                     buf = buf[e + 2 :]
-                    cap = 6000
-                    while len(state["v_q"]) > cap:
-                        state["v_q"].popleft()
                     state["v_evt"].set()
     except Exception as e:
         print("pump video", e, flush=True)
 
 
-def pump_audio(gen, path):
+def pump_audio(gen, path, skip=0):
     try:
         with open(path, "rb") as fh:
             n = 0
-            t0 = time.perf_counter()
             while state["gen"] == gen:
                 chunk = fh.read(4096)
                 if not chunk:
                     break
-                state["a_q"].append(chunk)
                 n += len(chunk)
-                if time.perf_counter() - t0 >= AUDIO_BUFFER_SEC and n > 40000:
-                    state["a_evt"].set()
-            if n:
+                state["a_read"] = n
+                if skip > 0:
+                    if len(chunk) <= skip:
+                        skip -= len(chunk)
+                        continue
+                    chunk = chunk[skip:]
+                    skip = 0
+                state["a_q"].append(chunk)
                 state["a_evt"].set()
             print("pump audio end (%d bytes)" % n, flush=True)
     except Exception as e:
@@ -468,172 +497,153 @@ def pump_audio(gen, path):
 
 
 def ffmpeg_cmd(vsrc, asrc, pos):
-    if asrc and asrc == vsrc:
-        return [
-            "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-            "-user_agent", UA, "-headers", HEADERS,
-            "-ss", str(pos), "-readrate", "16",
-            "-reconnect", "1", "-reconnect_streamed", "1",
-            "-i", vsrc,
-            "-map", "0:v:0", "-an",
-            "-vf", "scale=-2:%d" % HEIGHT, "-r", str(FPS), "-q:v", str(Q),
-            "-f", "mjpeg", FIFO_V,
-            "-map", "0:a:0", "-vn",
-            "-c:a", "libmp3lame", "-b:a", "%dk" % AUDIO_KBPS,
-            "-f", "mp3", FIFO_A,
-        ]
-    if asrc:
-        return [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-y",
-            "-user_agent",
-            UA,
-            "-headers",
-            HEADERS,
-            "-ss",
-            str(pos),
-            "-readrate",
-            "16",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-i",
-            vsrc,
-            "-user_agent",
-            UA,
-            "-headers",
-            HEADERS,
-            "-ss",
-            str(pos),
-            "-readrate",
-            "16",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-i",
-            asrc,
-            "-map",
-            "0:v:0",
-            "-an",
-            "-vf",
-            "scale=-2:%d" % HEIGHT,
-            "-r",
-            str(FPS),
-            "-q:v",
-            str(Q),
-            "-f",
-            "mjpeg",
-            FIFO_V,
-            "-map",
-            "1:a:0",
-            "-vn",
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "%dk" % AUDIO_KBPS,
-            "-f",
-            "mp3",
-            FIFO_A,
-        ]
-    return [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-y",
-        "-user_agent",
-        UA,
-        "-headers",
-        HEADERS,
-        "-ss",
-        str(pos),
-        "-readrate",
-        "16",
-        "-reconnect",
-        "1",
-        "-reconnect_streamed",
-        "1",
-        "-i",
-        vsrc,
-        "-map",
-        "0:v:0",
-        "-an",
-        "-vf",
-        "scale=-2:%d" % HEIGHT,
-        "-r",
-        str(FPS),
-        "-q:v",
-        str(Q),
-        "-f",
-        "mjpeg",
-        FIFO_V,
+    net = [
+        "-user_agent", UA, "-headers", HEADERS,
+        "-ss", "%.3f" % pos, "-readrate", "16",
+        "-reconnect", "1", "-reconnect_streamed", "1",
+        "-reconnect_on_network_error", "1",
     ]
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y"] + net + ["-i", vsrc]
+    vout = [
+        "-map", "0:v:0", "-an",
+        "-vf", "scale=-2:%d" % HEIGHT, "-r", str(FPS), "-q:v", str(Q),
+        "-f", "mjpeg", FIFO_V,
+    ]
+    if not asrc:
+        return cmd + vout
+    if asrc == vsrc:
+        amap = "0:a:0"
+    else:
+        cmd += net + ["-i", asrc]
+        amap = "1:a:0"
+    # niente tag ID3 ne' header Xing: lo stream audio si puo' riprendere a meta'
+    aout = [
+        "-map", amap, "-vn",
+        "-c:a", "libmp3lame", "-b:a", "%dk" % AUDIO_KBPS,
+        "-id3v2_version", "0", "-write_xing", "0",
+        "-f", "mp3", FIFO_A,
+    ]
+    return cmd + vout + aout
+
+
+def read_err(p, tail):
+    n = 0
+    try:
+        for raw in p.stderr:
+            line = raw.decode("utf-8", "replace").rstrip()
+            if not line:
+                continue
+            tail.append(line)
+            n += 1
+            if n <= 20:
+                print("ff:", line[:240], flush=True)
+    except Exception:
+        pass
+
+
+def spawn_ff(gen, pos, vsrc, asrc, askip=0):
+    ensure_fifo(FIFO_V)
+    ensure_fifo(FIFO_A)
+    state["v_made"] = 0
+    state["a_read"] = 0
+    state["urls"] = (vsrc, asrc)
+    tail = deque(maxlen=12)
+    p = subprocess.Popen(
+        ffmpeg_cmd(vsrc, asrc, pos),
+        stdin=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    state["ff"] = p
+    print("ffmpeg @ %.1fs url=%d" % (pos, 1 if asrc == vsrc else 2), flush=True)
+    threads = [threading.Thread(target=pump_jpegs, args=(gen, FIFO_V), daemon=True)]
+    if asrc:
+        threads.append(threading.Thread(target=pump_audio, args=(gen, FIFO_A, askip), daemon=True))
+    for t in threads:
+        t.start()
+    threading.Thread(target=read_err, args=(p, tail), daemon=True).start()
+    threading.Thread(target=watch_ff, args=(gen, p, pos, threads, tail), daemon=True).start()
+
+
+def watch_ff(gen, p, pos, threads, tail):
+    # Sorveglia ffmpeg. Se si chiude prima della fine del video (YouTube che
+    # taglia la connessione, URL scaduto, 403) riparte dal punto esatto in cui
+    # si era fermato, senza svuotare le code: il browser non se ne accorge.
+    p.wait()
+    unblock_fifo(FIFO_V)
+    unblock_fifo(FIFO_A)
+    for t in threads:
+        while t.is_alive() and state["gen"] == gen:
+            t.join(timeout=1)
+    with lock:
+        if state["gen"] != gen or state["ff"] is not p:
+            return
+        made = pos + state["v_made"] / float(FPS)
+        apos = pos + state["a_read"] * 8.0 / (AUDIO_KBPS * 1000)
+        dur = state["duration"] or 0
+        rc = p.returncode
+        if rc == 0 and (not dur or made >= dur - 3 or (state["v_made"] == 0 and pos >= dur - 30)):
+            state["ff_done"] = gen
+            print("ffmpeg finito a %.0fs" % made, flush=True)
+            return
+        print("ffmpeg interrotto a %.1fs su %ds (codice %s, %d frame)" % (made, dur, rc, state["v_made"]), flush=True)
+        for line in list(tail)[-3:]:
+            print("  ff:", line[:240], flush=True)
+        if state["v_made"] >= FPS * 10:
+            state["fails"] = 0
+        else:
+            state["fails"] = state.get("fails", 0) + 1
+        fails = state["fails"]
+        if fails >= 6:
+            state["err"] = "403 dopo %d tentativi: YouTube interrompe lo stream" % fails
+            print(state["err"], flush=True)
+            return
+        urls = state.get("urls")
+        state["ff"] = None
+    time.sleep(min(fails, 5) + 0.5)
+    if fails >= 2 or not urls:
+        try:
+            lst = ytdlp_urls()
+        except Exception as e:
+            print("riavvio fallito:", e, flush=True)
+            return
+        urls = (lst[0], lst[1] if len(lst) > 1 else lst[0])
+    with lock:
+        if state["gen"] != gen or state["ff"] is not None:
+            return
+        askip = int(max(0.0, apos - made) * AUDIO_KBPS * 1000 / 8)
+        print("riparto da %.1fs (audio avanti %.2fs)" % (made, max(0.0, apos - made)), flush=True)
+        spawn_ff(gen, made, urls[0], urls[1], askip)
 
 
 def start_ff():
-    if state["ff"] and state["ff"].poll() is None:
+    # una sola partenza per sessione: un secondo /stream.mp3 (o un ffmpeg gia'
+    # finito) non deve svuotare le code ne' rilanciare ffmpeg
+    gen = state["gen"]
+    if state.get("ff_gen") == gen:
         return
     stop_ff()
-    ensure_fifo(FIFO_V)
+    state["ff_gen"] = gen
+    state["fails"] = 0
     pos = int(now_pos())
-    urls = ytdlp_urls()
+    lock.release()
+    try:
+        urls = ytdlp_urls()
+    except Exception:
+        lock.acquire()
+        if state["gen"] == gen:
+            state["ff_gen"] = -1
+        raise
+    lock.acquire()
+    if state["gen"] != gen:
+        return
     vsrc = urls[0]
     asrc = urls[1] if len(urls) > 1 else urls[0]
     state["has_audio"] = True
-    ensure_fifo(FIFO_A)
-    print("ffmpeg @ %ds url=%d" % (pos, len(urls)), flush=True)
-    gen_now = state["gen"]
-    attempt = 0
-    while True:
-        if state["gen"] != gen_now:
-            return
-        attempt += 1
-        state["ff"] = subprocess.Popen(ffmpeg_cmd(vsrc, asrc, pos))
-        # release lock while waiting for ffmpeg to start
-        lock.release()
-        try:
-            time.sleep(min(30, 2 * attempt))
-        finally:
-            lock.acquire()
-        if state["gen"] != gen_now:
-            return
-        if state["ff"] and state["ff"].poll() is None:
-            state["err"] = ""
-            break
-        print("ffmpeg morto, retry %d" % attempt, flush=True)
-        stop_ff()
-        ensure_fifo(FIFO_V)
-        try:
-            lock.release()
-            try:
-                urls = ytdlp_urls()
-            finally:
-                lock.acquire()
-        except Exception as e:
-            state["err"] = str(e)
-            return
-        if state["gen"] != gen_now:
-            return
-        vsrc = urls[0]
-        asrc = urls[1] if len(urls) > 1 else urls[0]
-        state["has_audio"] = True
-        ensure_fifo(FIFO_A)
-        if attempt >= 20:
-            state["err"] = "403 dopo 20 tentativi"
-            print(state["err"], flush=True)
-            return
     state["seek_base"] = float(pos)
     state["t_play"] = time.perf_counter()
     state["paused"] = False
-    gen = state["gen"]
-    threading.Thread(target=pump_jpegs, args=(gen, FIFO_V), daemon=True).start()
-    if asrc:
-        threading.Thread(target=pump_audio, args=(gen, FIFO_A), daemon=True).start()
+    state["err"] = ""
+    spawn_ff(gen, pos, vsrc, asrc)
 
 
 def new_session(pos=None):
@@ -766,7 +776,7 @@ var drawnT = 0;
 var painting = false;
 var paintGen = 0;
 var frameBase = 0;
-var playOrigin = 0;
+var vEnded = false;
 function statusLine(){
   var slow = rateMb > 0 && rateMb < 1;
   var head = slow ? ('Linea lenta ' + rateMb.toFixed(2) + ' MB/s') : (rateMb ? (rateMb.toFixed(2) + ' MB/s') : 'misuro la linea');
@@ -820,6 +830,15 @@ function draw(){
   document.getElementById('fill').style.width = p + '%';
   document.getElementById('time').textContent = fmt(pos) + ' / ' + fmt(DURATION);
 }
+function pollDur(){
+  if (DURATION) return;
+  fetch('/dur').then(function(r){ return r.text(); }).then(function(t){
+    var d = parseInt(t, 10) || 0;
+    if (d > 0) { DURATION = d; draw(); }
+    else setTimeout(pollDur, 1500);
+  }).catch(function(){ setTimeout(pollDur, 3000); });
+}
+pollDur();
 function startClock(){
   playing = true;
   if (tick) clearInterval(tick);
@@ -874,6 +893,7 @@ function stopVideo(){
   if (vAbort) { vAbort.abort(); vAbort = null; }
   if (playTimer) { clearInterval(playTimer); playTimer = null; }
   frames = [];
+  vEnded = false;
   if (vUrl) { URL.revokeObjectURL(vUrl); vUrl = null; }
 }
 function findBytes(u8, a, b, from){
@@ -893,6 +913,7 @@ function startVideoBuf(){
     var reader = res.body.getReader();
     function read(){
       return reader.read().then(function(r){
+        if (r.done && !ctrl.signal.aborted && my === gen) { vEnded = true; return; }
         if (r.done || ctrl.signal.aborted || my !== gen) return;
         pending = concatU8(pending, r.value);
         while (true) {
@@ -1009,7 +1030,7 @@ function showVideo(){
       return;
     }
     pollRate();
-    if (frames.length < FPS * 5) {
+    if (frames.length < FPS * 5 && !vEnded) {
       stallPlay();
       showStatus('buffer ' + frames.length + ', carico');
       return;
@@ -1035,35 +1056,15 @@ function showVideo(){
       }
     }
     if (stalled) {
-      if (frames.length < FPS * 10) {
+      if (frames.length < FPS * 10 && !vEnded) {
         showStatus('fermo a ' + frames.length + ', carico buffer');
         return;
       }
       resumePlay();
       playOrigin = performance.now() - drawnT * 1000;
-      // resync audio: restart stream per allineamento pulito
-      if (audioOn && audioUrl) {
-        var stallGen = gen;
-        stopAudio();
-        fetch('/ctrl?flush_audio=1').then(function(){
-          if (stallGen !== gen) return;
-          audioUrl = '/stream.mp3?t=' + Date.now();
-          playAudioStream(audioUrl);
-          if (actx) {
-            var d = drawnT;
-            syncOrigin = actx.currentTime - d;
-            audioArm = syncOrigin;
-            audioCursor = d;
-            audioNext = actx.currentTime;
-          }
-        });
-      } else {
-        for (var j = 0; j < audioSources.length; j++) {
-          try { audioSources[j].stop(); } catch (e) {}
-        }
-        audioSources = [];
-        audioHold = [];
-      }
+      // durante lo stallo actx era sospeso: orologio audio e video fermi insieme,
+      // quindi l'audio gia' programmato e' ancora allineato. Basta ripartire.
+      if (actx && audioOn && actx.state === 'suspended' && earTime() <= drawnT + 0.12) actx.resume();
     }
     if (audioHold.length && audioArm) flushHeldAudio();
     if (painting) return;
@@ -1072,6 +1073,16 @@ function showVideo(){
     while (frames.length > 2 && drawnT + 2 / FPS < elapsed) {
       frames.shift();
       drawnT += 1 / FPS;
+    }
+    if (!frames.length) {
+      if (vEnded) {
+        clearInterval(playTimer);
+        playTimer = null;
+        stopClock();
+        draw();
+        showNext(true);
+      }
+      return;
     }
     var jpg = frames.shift();
     shownFrames++;
@@ -1161,6 +1172,13 @@ function playAudioStream(url){
         return new Promise(function(ok){ setTimeout(ok, 300); }).then(read);
       }
       return reader.read().then(function(r){
+        if (r.done && !ctrl.signal.aborted && my === gen && pending.length > 1000) {
+          var rest = pending.buffer.slice(pending.byteOffset, pending.byteOffset + pending.byteLength);
+          pending = new Uint8Array(0);
+          return actx.decodeAudioData(rest).then(function(buf){
+            if (!ctrl.signal.aborted && my === gen) scheduleBuf(buf);
+          }).catch(function(){});
+        }
         if (r.done || ctrl.signal.aborted || my !== gen) return;
         pending = concatU8(pending, r.value);
         if (pending.length < 48000) return read();
@@ -1835,7 +1853,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.send_header("Content-Type", "text/plain")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            self.wfile.write(("%d/%d %.2f" % (len(state["v_q"]), 6000, state.get("rate") or 0)).encode())
+            self.wfile.write(("%d/%d %.2f" % (len(state["v_q"]), V_CAP, state.get("rate") or 0)).encode())
             return
 
         if path == "/status":
@@ -1881,6 +1899,14 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if path == "/dur":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(str(int(state["duration"] or 0)).encode())
             return
 
         if path == "/health":
@@ -1937,10 +1963,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
 
         if path == "/ctrl":
-            if "flush_audio" in q:
-                state["a_q"].clear()
-                msg = "audio flushed"
-            elif "pos" in q:
+            if "pos" in q:
                 cancel_stop()
                 want = float(q["pos"][0])
                 apply_settings(self.headers.get("Cookie"))
@@ -1994,6 +2017,8 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                         return
                     if state["a_q"]:
                         self.wfile.write(state["a_q"].popleft())
+                    elif state.get("ff_done") == gen:
+                        return
                     else:
                         time.sleep(0.02)
             except (BrokenPipeError, ConnectionResetError, OSError):
@@ -2019,6 +2044,8 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                         arm_stop("video client chiuso")
                         return
                     if not state["v_q"]:
+                        if state.get("ff_done") == gen:
+                            return
                         time.sleep(0.01)
                         continue
                     jpg = state["v_q"].popleft()
