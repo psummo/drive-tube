@@ -13,7 +13,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.20"
+VERSION = "11.21"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1545,6 +1545,98 @@ def restart_self():
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+TEST_HTML = r"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test browser</title>
+<style>
+body{background:#111;color:#eee;font:22px/1.35 sans-serif;margin:0;padding:14px}
+h1{font-size:26px;margin:0 0 8px}
+.r{display:flex;justify-content:space-between;border-bottom:1px solid #333;padding:6px 0}
+.ok{color:#4f4;font-weight:bold}.ko{color:#f55;font-weight:bold}.na{color:#fa0;font-weight:bold}
+canvas{border:2px solid #555;margin:8px 0;width:160px;height:120px;image-rendering:pixelated}
+#clock{font-size:30px;color:#6cf}
+</style></head><body>
+<h1>Test browser (WebCodecs)</h1>
+<div id="clock"></div>
+<div>Pagina senza tag video/audio. Provala anche in marcia: il contatore deve continuare a girare.</div>
+<canvas id="cv" width="160" height="120"></canvas>
+<div id="out"></div>
+<script>
+var H264="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", WEBP="UklGRs4BAABXRUJQVlA4IMIBAAAQCwCdASogACAAPtFapkwoJSOiKA1RABoJbACdMtU5n6b+AF9PaCcAf3n7Vd4A3AH6m/qr79m6H/6D2AP1V6a72PP2h9JC7R/vTFa5vx43Xicto3SYh41mZeE26jYWjcmAAP77bBvjYXMzvJhisCM79+M2BDpc6dzGGF/6H2uYEURvOfra96V3njC8fhCFgYuyPL+4Ef4zyMQfb7asr/Mqrq30O/Vzn/9IvYx5XpvGsHNflzeW+/+LAGcJsYId8wpUdJiYW0YLHLZLnvCxj0fxJpvFehfB5Wkn8qaH+Vflx3NPw3Ji5zFEQLRyQAOe+OB1EJtR79qVOgTrvzmvInBp4ss0WDw6C+AriIuGP7QbYyJPqMwt/2R0fs4ced9+C5a8pxK9VS+8qzNv84vj9bg1rj2+OE28ExCvHPLnjLfCg3YVM9exdRzRotb/8Ovnz9CJxnxbNgREEzjVXKewAuZzY/btf7sbzvBkA8h/TrEzFZhX/JgP2atsK5X01tJcoqiSlGsg9bztsMQgcFNZSUEFynUdWHfNc7Tu21ou9s9Z6e1siK/qSJP3o7viVAor/8LyneD80fUb+MXwDkyjoFSaAAA=", AVIF="AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUEAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAACcAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAAgAAAAIAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EgAAAAAAATY29scm5jbHgAAgACAACAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAACkbWRhdAoMIAAAAif+bXyQENACMosBFAA5AAAAssAAFVD4aMmepqqV2mRudBzeUZVYKeH4kozKCj//u5/g1jPgUMFuKFwqd5iviPVWqMW/4csgDZt583HdVYIVqA/MyIh52I94qYcDMrU/3IdFFk8PQh2VRBwsIiiKh3KeuPhxunDAi9b8XIyOwno1MtGJKkg4XKd4k8gP7IPBmc28+67J4A==";
+var out=document.getElementById('out');
+function row(name,val,cls){var d=document.createElement('div');d.className='r';
+ d.innerHTML='<span>'+name+'</span><span class="'+cls+'">'+val+'</span>';out.appendChild(d);}
+function yn(name,b,txt){row(name,txt||(b?'SI':'NO'),b?'ok':'ko');}
+function b64(s){var a=atob(s),u=new Uint8Array(a.length);for(var i=0;i<a.length;i++)u[i]=a.charCodeAt(i);return u;}
+var t0=Date.now();
+setInterval(function(){document.getElementById('clock').textContent='Contatore: '+((Date.now()-t0)/1000).toFixed(1)+' s';},100);
+
+yn('VideoDecoder',typeof VideoDecoder!=='undefined');
+yn('AudioDecoder',typeof AudioDecoder!=='undefined');
+yn('MediaSource (MSE)',typeof MediaSource!=='undefined');
+yn('createImageBitmap',typeof createImageBitmap!=='undefined');
+yn('AudioContext',!!(window.AudioContext||window.webkitAudioContext));
+yn('OffscreenCanvas',typeof OffscreenCanvas!=='undefined');
+row('User agent',(navigator.userAgent.match(/Chrom[a-z]+\/[\d.]+/)||['?'])[0],'na');
+
+async function cfgVideo(codec,label){
+ try{
+  var r=await VideoDecoder.isConfigSupported({codec:codec,codedWidth:1280,codedHeight:720});
+  var h=await VideoDecoder.isConfigSupported({codec:codec,codedWidth:1280,codedHeight:720,hardwareAcceleration:'prefer-hardware'});
+  row(label,(r.supported?'SI':'NO')+' / hw '+(h.supported?'SI':'NO'),r.supported?'ok':'ko');
+ }catch(e){row(label,'errore: '+e.message,'ko');}
+}
+async function cfgAudio(codec,label,extra){
+ try{
+  var c={codec:codec,sampleRate:44100,numberOfChannels:2};
+  if(extra)for(var k in extra)c[k]=extra[k];
+  var r=await AudioDecoder.isConfigSupported(c);
+  row(label,r.supported?'SI':'NO',r.supported?'ok':'ko');
+ }catch(e){row(label,'errore: '+e.message,'ko');}
+}
+async function img(label,b,type){
+ try{
+  var bl=new Blob([b64(b)],{type:type});
+  var bm=await createImageBitmap(bl);
+  yn(label,true,'SI ('+bm.width+'x'+bm.height+')');
+ }catch(e){row(label,'NO','ko');}
+}
+async function realDecode(){
+ if(typeof VideoDecoder==='undefined'){row('Decodifica H.264 reale','salto','na');return;}
+ try{
+  var drawn=false,errMsg='';
+  var dec=new VideoDecoder({
+   output:function(f){var cv=document.getElementById('cv');cv.getContext('2d').drawImage(f,0,0,cv.width,cv.height);drawn=true;f.close();},
+   error:function(e){errMsg=e.message;}
+  });
+  dec.configure({codec:'avc1.42c01e',codedWidth:160,codedHeight:120});
+  dec.decode(new EncodedVideoChunk({type:'key',timestamp:0,data:b64(H264)}));
+  await dec.flush();
+  if(drawn)row('Decodifica H.264 reale + canvas','SI (vedi riquadro sopra)','ok');
+  else row('Decodifica H.264 reale + canvas','NO '+errMsg,'ko');
+ }catch(e){row('Decodifica H.264 reale + canvas','NO: '+e.message,'ko');}
+}
+(async function(){
+ if(typeof VideoDecoder!=='undefined'){
+  await cfgVideo('avc1.42c01e','H.264 baseline');
+  await cfgVideo('avc1.64001f','H.264 high 3.1 (720p)');
+  await cfgVideo('avc1.640028','H.264 high 4.0 (1080p)');
+  await cfgVideo('vp09.00.31.08','VP9');
+  await cfgVideo('av01.0.05M.08','AV1');
+ }
+ if(typeof AudioDecoder!=='undefined'){
+  await cfgAudio('mp4a.40.2','AAC-LC');
+  await cfgAudio('opus','Opus');
+  await cfgAudio('mp3','MP3');
+ }
+ await img('WebP',WEBP,'image/webp');
+ await img('AVIF',AVIF,'image/avif');
+ await realDecode();
+ row('Test completato','','na');
+})();
+</script></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
@@ -1779,6 +1871,16 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 except Exception:
                     pass
                 threading.Thread(target=restart_self, daemon=True).start()
+            return
+
+        if path == "/test":
+            body = TEST_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/health":
