@@ -5,6 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 import select
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -13,7 +14,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.22"
+VERSION = "11.23"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -360,7 +361,7 @@ def client_gone(handler):
         ready, _, _ = select.select([handler.connection], [], [], 0)
         if not ready:
             return False
-        peek = handler.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        peek = socket.socket.recv(handler.connection, 1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
         return peek == b""
     except BlockingIOError:
         return False
@@ -1589,6 +1590,7 @@ function b64(s){var a=atob(s),u=new Uint8Array(a.length);for(var i=0;i<a.length;
 var t0=Date.now();
 setInterval(function(){document.getElementById('clock').textContent='Contatore: '+((Date.now()-t0)/1000).toFixed(1)+' s';},100);
 
+yn('Pagina sicura (HTTPS)',!!window.isSecureContext);
 yn('VideoDecoder',typeof VideoDecoder!=='undefined');
 yn('AudioDecoder',typeof AudioDecoder!=='undefined');
 yn('MediaSource (MSE)',typeof MediaSource!=='undefined');
@@ -2110,9 +2112,41 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         pass
 
 
+class QuietTLSServer(ThreadingHTTPServer):
+    # handshake falliti (scanner, certificati rifiutati, connessioni chiuse) non
+    # riempiono il log di traceback
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
+def serve_https():
+    # HTTPS facoltativo, su una porta separata: parte solo se trova il certificato.
+    # Serve per le API del browser riservate alle pagine sicure (es. WebCodecs).
+    cert = os.environ.get("YT_CERT") or os.path.expanduser("~/yt-cert/fullchain.pem")
+    key = os.environ.get("YT_KEY") or os.path.expanduser("~/yt-cert/privkey.pem")
+    if not (os.path.exists(cert) and os.path.exists(key)):
+        print("https spento: certificato non trovato in", os.path.dirname(cert), flush=True)
+        return
+    port = int(os.environ.get("YT_HTTPS_PORT") or 8443)
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        srv = QuietTLSServer(("0.0.0.0", port), Handler)
+        # handshake nel thread della richiesta, non nel ciclo che accetta le connessioni
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
+    except Exception as e:
+        print("https non avviato:", e, flush=True)
+        return
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print("https://0.0.0.0:%d/" % port, flush=True)
+
+
 if __name__ == "__main__":
     fetch_duration()
     print("http://0.0.0.0:%d/  duration=%ss" % (PORT, state["duration"]))
+    serve_https()
     try:
         ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
     finally:

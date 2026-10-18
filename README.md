@@ -60,6 +60,28 @@ sudo systemctl daemon-reload && sudo systemctl enable --now drive-tube
 ```
 La riga `ExecStartPre` scarica l'ultima versione a ogni avvio del servizio. Il log finisce in `~/yt.log` ed è visibile anche dal pannello dell'app. Per fermare o riavviare: `sudo systemctl stop|restart drive-tube`.
 
+## HTTPS (facoltativo)
+L'app funziona anche solo in http. L'HTTPS serve alle funzioni del browser riservate alle pagine sicure (per esempio la decodifica video WebCodecs). Il server lo attiva da solo, su una porta separata (**8443**), se trova un certificato in `~/yt-cert/fullchain.pem` e `~/yt-cert/privkey.pem`. La porta http 8090 resta attiva.
+
+Serve un nome di dominio che punta alla macchina (va bene uno gratuito di [DuckDNS](https://www.duckdns.org)). Il certificato gratuito di Let's Encrypt si ottiene con certbot:
+
+1. Apri in ingresso le porte **80** (serve a Let's Encrypt per la verifica) e **8443**. Su AWS EC2: *Security group → Inbound rules*.
+2. Installa certbot:
+   ```bash
+   sudo apt install -y certbot   # Debian / Ubuntu
+   sudo dnf install -y certbot   # Fedora / RHEL / Amazon Linux
+   ```
+3. Dalla cartella `drive-tube`, sostituisci il dominio e lancia:
+   ```bash
+   DOM=tuonome.duckdns.org
+   sudo certbot certonly --standalone -d $DOM --agree-tos --register-unsafely-without-email --non-interactive \
+     --deploy-hook "install -D -m 600 -o $(whoami) /etc/letsencrypt/live/$DOM/fullchain.pem $HOME/yt-cert/fullchain.pem && install -D -m 600 -o $(whoami) /etc/letsencrypt/live/$DOM/privkey.pem $HOME/yt-cert/privkey.pem && systemctl restart drive-tube"
+   ```
+   Il deploy hook copia il certificato dove il server lo legge e riavvia il servizio. Lo rifà da solo a ogni rinnovo automatico (ogni circa 60 giorni), purché la porta 80 resti aperta.
+4. Apri `https://tuonome.duckdns.org:8443/`. Nel log compare `https://0.0.0.0:8443/`. Se invece compare `https spento`, il certificato non è stato trovato.
+
+Porta e percorsi si cambiano con `YT_HTTPS_PORT`, `YT_CERT` e `YT_KEY`.
+
 ## Impostazioni
 Dal pannello (ingranaggio in alto a sinistra) si scelgono risoluzione, fluidità, qualità video, qualità audio e buffer audio, con valori predefiniti. **Salva e applica** le memorizza nei **cookie del browser**: non esiste nessun file di configurazione sul server. Senza cookie si usano i default scritti nel codice (`SETTINGS` in `yt_mjpeg.py`). Anche le ricerche recenti stanno in un cookie.
 
