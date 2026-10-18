@@ -15,7 +15,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.27"
+VERSION = "11.28"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -2210,7 +2210,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 p = subprocess.run(
                     yt_cmd("--no-playlist", "--user-agent", UA,
                            "-f", "bv*[vcodec^=avc1][height<=720]/bv*[vcodec^=avc1]",
-                           "--print", "%(width)sx%(height)s %(fps)s fps %(vcodec)s",
+                           "--print", "%(width)sx%(height)s %(fps)s fps %(vcodec)s formato %(format_id)s %(protocol)s",
                            "--print", "urls", url),
                     text=True, capture_output=True, timeout=90,
                 )
@@ -2253,7 +2253,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 ff, first, ferr = h264_start(urls[0])
                 if ff:
                     break
-                err = "ffmpeg: " + (ferr or "nessun dato")
+                err = "ffmpeg [" + info + "]: " + (ferr or "nessun dato")
                 print("h264test tentativo %d:" % attempt, err, flush=True)
             if not ff:
                 body = err.encode("utf-8", "replace")
