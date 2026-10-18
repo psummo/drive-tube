@@ -9,6 +9,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 import secrets
 import select
+import shutil
 import socket
 import ssl
 import struct
@@ -16,11 +17,12 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.0"
+VERSION = "13.1"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -122,8 +124,74 @@ HEADERS = "User-Agent: " + UA + "\r\nReferer: https://www.youtube.com/\r\n"
 COOKIES = os.path.expanduser("~/cookies.txt")
 
 
+YTDLP_LOCAL = os.path.expanduser("~/.local/bin/yt-dlp")
+YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+YTDLP_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+_ytdlp_latest = {"t": 0, "v": "", "err": ""}
+
+
+def ytdlp_bin():
+    # la copia aggiornata dall'admin (nella home, scrivibile) ha la precedenza
+    if os.path.isfile(YTDLP_LOCAL) and os.access(YTDLP_LOCAL, os.X_OK):
+        return YTDLP_LOCAL
+    return "yt-dlp"
+
+
+def tool_version(cmd):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        out = (p.stdout or p.stderr or "").strip().splitlines()
+        return out[0].strip() if out else ""
+    except Exception:
+        return ""
+
+
+def ytdlp_status(force=False):
+    inst = tool_version([ytdlp_bin(), "--version"])
+    if force or time.time() - _ytdlp_latest["t"] > 600:
+        try:
+            req = urllib.request.Request(YTDLP_API, headers={"User-Agent": "drive-tube", "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                tag = json.load(r).get("tag_name", "")
+            _ytdlp_latest.update(t=time.time(), v=tag, err="")
+        except Exception as e:
+            _ytdlp_latest.update(t=time.time(), err="controllo fallito: %s" % e)
+    latest = _ytdlp_latest["v"]
+    js = ""
+    for name in ("deno", "node"):
+        path = shutil.which(name)
+        if path:
+            js = "%s %s" % (name, tool_version([path, "--version"]))
+            break
+    ff = tool_version(["ffmpeg", "-version"])
+    return {
+        "installed": inst or "non trovato", "latest": latest, "error": _ytdlp_latest["err"],
+        "newer": bool(inst and latest and _ver_key(latest) > _ver_key(inst)),
+        "path": shutil.which(ytdlp_bin()) or ytdlp_bin(),
+        "js": js or "nessuno (yt-dlp potrebbe non funzionare con YouTube)",
+        "ffmpeg": " ".join(ff.split()[:3]) if ff else "non trovato",
+    }
+
+
+def ytdlp_update():
+    os.makedirs(os.path.dirname(YTDLP_LOCAL), exist_ok=True)
+    tmp = YTDLP_LOCAL + ".new"
+    req = urllib.request.Request(YTDLP_URL, headers={"User-Agent": "drive-tube"})
+    with urllib.request.urlopen(req, timeout=180) as r, open(tmp, "wb") as f:
+        shutil.copyfileobj(r, f)
+    os.chmod(tmp, 0o755)
+    v = tool_version([tmp, "--version"])
+    if not v or not v[0].isdigit():
+        os.remove(tmp)
+        raise RuntimeError("il file scaricato non funziona")
+    os.replace(tmp, YTDLP_LOCAL)
+    feed_cache.clear()
+    _ytdlp_latest["t"] = 0
+    return v
+
+
 def yt_cmd(*args):
-    cmd = ["yt-dlp"]
+    cmd = [ytdlp_bin()]
     if os.path.isfile(COOKIES):
         cmd += ["--cookies", COOKIES]
     cmd += list(args)
@@ -308,7 +376,8 @@ class Session:
 
 SESSIONS = {}
 SESSIONS_LOCK = threading.Lock()
-MAX_PER_CODE = 3      # sessioni per codice: la quarta chiude la meno usata
+OWNER = {}            # codice -> sid del browser che lo sta usando
+MAX_PER_CODE = 1      # un codice = una sessione: chi lo apre altrove chiude questa
 MAX_SESSIONS = 10     # sessioni in tutto
 IDLE_CLOSE = 3 * 3600  # una sessione ferma da 3 ore viene chiusa
 
@@ -394,6 +463,9 @@ def get_session(sid, who):
 
 
 def close_session(s):
+    with SESSIONS_LOCK:
+        if OWNER.get(s.who) == s.sid and s.sid not in SESSIONS:
+            OWNER.pop(s.who, None)
     prev = getattr(_tls, "s", None)
     bind(s)
     try:
@@ -1088,6 +1160,27 @@ var painting = false;
 var paintGen = 0;
 var frameBase = 0;
 var vEnded = false;
+// il codice e' stato aperto su un altro schermo: qui ci si ferma
+var kickedShown = false;
+function showKicked(){
+  if (kickedShown) return;
+  kickedShown = true;
+  gen++;
+  if (fillWait) clearInterval(fillWait);
+  stopVideo();
+  stopAudio();
+  stopClock();
+  overlay.style.display = 'flex';
+  msg.style.display = 'block';
+  go.style.display = 'none';
+  msg.innerHTML = 'Questo codice è in uso su un altro schermo.<br><br>' +
+    '<button id="takeback" type="button" style="font-size:24px;padding:12px 22px;border:0;border-radius:10px;background:#fff;color:#000">Guarda qui</button>';
+  document.getElementById('takeback').onclick = function(ev){ ev.stopPropagation(); location.reload(); };
+}
+function ck(r){
+  if (r && r.status === 409) { showKicked(); throw new Error('in uso altrove'); }
+  return r;
+}
 function statusLine(){
   if (vmode === 'h264' && hs) {
     return 'H.264' + (rateMb ? ' ' + rateMb.toFixed(2) + ' MB/s' : '') + NL + 'video pronto ' + Math.max(0, hAhead()).toFixed(1) + ' s';
@@ -1107,7 +1200,7 @@ function pollRate(){
   var now = Date.now();
   if (now - rateAt < 1000) return;
   rateAt = now;
-  fetch('/buf').then(function(r){ return r.text(); }).then(function(t){
+  fetch('/buf').then(ck).then(function(r){ return r.text(); }).then(function(t){
     var p = t.split(' ');
     var bits = (p[0] || '').split('/');
     serverFrames = parseInt(bits[0], 10) || 0;
@@ -1183,7 +1276,7 @@ function preload(auto){
   fetch('/prime').catch(function(){});
   function poll(){
     if (my !== gen) return;
-    fetch('/status').then(function(r){ return r.text(); }).then(function(err){
+    fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
       if (my !== gen) return;
       if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
         msg.textContent = err;
@@ -1224,7 +1317,7 @@ function startVideoBuf(){
   var pending = new Uint8Array(0);
   var started = false;
   screen.style.display = 'none';
-  fetch('/stream.mjpg?t=' + Date.now(), {signal: ctrl.signal}).then(function(res){
+  fetch('/stream.mjpg?t=' + Date.now(), {signal: ctrl.signal}).then(ck).then(function(res){
     var reader = res.body.getReader();
     function read(){
       return reader.read().then(function(r){
@@ -1577,7 +1670,7 @@ function playAudioStream(url){
   return ensureCtx().then(function(){
     audioNext = actx.currentTime + 0.25;
     return fetch(url, {signal: ctrl.signal});
-  }).then(function(res){
+  }).then(ck).then(function(res){
     if (!res.ok) { armVideo(); return; }
     var reader = res.body.getReader();
     var st = mp3Chunker();
@@ -1679,7 +1772,7 @@ function togglePlay(){
   if (now - clickAt < 700) return;
   clickAt = now;
   if (go.style.display !== 'none') { startBoth(); return; }
-  fetch('/ctrl?pause=1').then(function(r){ return r.text(); }).then(function(t){
+  fetch('/ctrl?pause=1').then(ck).then(function(r){ return r.text(); }).then(function(t){
     if (t === 'paused') {
       userPaused = true;
       stopClock();
@@ -1852,7 +1945,7 @@ function hStop(){
 function hStream(){
   var my = gen, me = hs, ctrl = new AbortController();
   me.abort = ctrl;
-  fetch('/stream.h264?t=' + Date.now(), {signal: ctrl.signal}).then(function(res){
+  fetch('/stream.h264?t=' + Date.now(), {signal: ctrl.signal}).then(ck).then(function(res){
     if (!res.ok) { me.failed = res.status; return; }
     var reader = res.body.getReader();
     var pend = new Uint8Array(0);
@@ -1981,7 +2074,7 @@ function beginH264(my, t0){
   fillWait = setInterval(function(){
     if (my !== gen || blocked) { if (blocked) clearInterval(fillWait); return; }
     pollRate();
-    fetch('/status').then(function(r){ return r.text(); }).then(function(err){
+    fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
       if (my !== gen || blocked) return;
       if (err && (err.indexOf('H264') === 0 || err.indexOf('403 dopo') === 0)) {
         blocked = true;
@@ -2042,11 +2135,11 @@ function beginAt(sec){
   if (vmode === 'h264') {
     hLoad().then(function(){
       if (my !== gen) return;
-      return fetch('/ctrl?pos=' + pos + '&mode=h264').then(function(){
+      return fetch('/ctrl?pos=' + pos + '&mode=h264').then(ck).then(function(){
         if (my === gen) beginH264(my, t0);
       });
     }).catch(function(e){
-      if (my !== gen) return;
+      if (my !== gen || kickedShown) return;
       ui('uso MJPEG: ' + (e && e.message ? e.message : e));
       setVmode('mjpeg');
       beginAt(pos);
@@ -2054,7 +2147,7 @@ function beginAt(sec){
     return;
   }
   setVmode('mjpeg');
-  fetch('/ctrl?pos=' + pos + '&mode=mjpeg').then(function(){
+  fetch('/ctrl?pos=' + pos + '&mode=mjpeg').then(ck).then(function(){
     if (my !== gen) return;
     audioUrl = '/stream.mp3?t=' + Date.now();
     playAudioStream(audioUrl);
@@ -2063,7 +2156,7 @@ function beginAt(sec){
     fillWait = setInterval(function(){
       if (my !== gen || blocked) { if (blocked) clearInterval(fillWait); return; }
       pollRate();
-      fetch('/status').then(function(r){ return r.text(); }).then(function(err){
+      fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
         if (my !== gen) return;
         if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
           blocked = true;
@@ -2681,7 +2774,7 @@ small{color:#999}
 <div id="msg"></div>
 
 <h2>Codici di accesso</h2>
-<small>Chi ha un codice attivo puo' usare l'app. Ogni browser ha la sua sessione (al massimo __MAXC__ per codice).</small>
+<small>Chi ha un codice attivo puo' usare l'app. Un codice si usa da un solo schermo alla volta: aprendolo su un altro, il primo si ferma.</small>
 <table id="codes"><thead><tr><th>Nome</th><th>Codice</th><th>Stato</th><th></th></tr></thead><tbody></tbody></table>
 <div class="row">
   <input id="newlabel" placeholder="nome (es. Marco)" size="16">
@@ -2698,6 +2791,11 @@ small{color:#999}
   <button id="updbtn">Controlla aggiornamenti</button>
   <button class="warn" id="restart">Riavvia il server</button>
 </div>
+<div class="row">
+  <span id="ytdtxt" class="na">yt-dlp: controllo...</span>
+  <button id="ytdbtn" disabled>Aggiorna yt-dlp</button>
+</div>
+<div class="row"><small id="tools"></small></div>
 
 <h2>Cookie YouTube</h2>
 <div class="row"><a href="/cookies">Carica i cookie di youtube.com</a> <small>(servono se YouTube chiede di verificare che non sei un robot)</small></div>
@@ -2816,7 +2914,32 @@ $('logbtn').onclick = function(){
     $('logbtn').textContent = 'Aggiorna il log';
   });
 };
+function loadYtdlp(force){
+  $('ytdtxt').textContent = 'yt-dlp: controllo...';
+  return api('ytdlp' + (force ? '?force=1' : '')).then(function(j){
+    var t = 'yt-dlp ' + j.installed + (j.latest ? ' (ultima ' + j.latest + ')' : '');
+    if (j.error) t += ' - ' + j.error;
+    $('ytdtxt').textContent = t;
+    $('ytdtxt').className = j.newer ? 'ko' : 'ok';
+    $('ytdbtn').disabled = false;
+    $('ytdbtn').textContent = j.newer ? 'Aggiorna yt-dlp' : 'Controlla di nuovo';
+    $('ytdbtn').setAttribute('data-mode', j.newer ? 'update' : 'check');
+    $('tools').textContent = 'in uso: ' + j.path + ' · ' + j.ffmpeg + ' · JavaScript: ' + j.js;
+  });
+}
+$('ytdbtn').onclick = function(){
+  var btn = $('ytdbtn');
+  if (btn.getAttribute('data-mode') !== 'update') { loadYtdlp(true); return; }
+  btn.disabled = true;
+  $('ytdtxt').textContent = 'scarico yt-dlp...';
+  api('ytdlp/update', {}).then(function(j){
+    if (!j.ok) { say('aggiornamento yt-dlp fallito: ' + j.error, true); btn.disabled = false; return; }
+    say('yt-dlp aggiornato a ' + j.version);
+    loadYtdlp(false);
+  });
+};
 load();
+loadYtdlp(false);
 setInterval(load, 5000);
 </script>
 </body></html>
@@ -2987,8 +3110,10 @@ class Handler(BaseHTTPRequestHandler):
         """Controlla l'accesso e lega la sessione del browser al thread."""
         hdr = self.headers.get("Cookie")
         who = who_is(hdr)
+        page = path in HTML_PATHS or not path.startswith(("/stream", "/ctrl", "/buf", "/status", "/dur",
+                                                           "/prime", "/ready", "/bye", "/next", "/h264"))
         if not who:
-            if path in HTML_PATHS or not path.startswith(("/stream", "/ctrl", "/buf", "/status")):
+            if page:
                 self.redirect("/login")
             else:
                 self.send_error(401, "serve il codice di accesso")
@@ -2998,6 +3123,24 @@ class Handler(BaseHTTPRequestHandler):
         if not (len(sid) == 32 and all(c in "0123456789abcdef" for c in sid)):
             sid = secrets.token_hex(16)
             self.add_header("Set-Cookie", cookie_hdr("dt_sid", sid))
+        # un codice si usa da un solo browser alla volta: aprire una pagina lo
+        # prende (e chiude l'altro); le richieste del player di un browser che
+        # l'ha perso vengono rifiutate, cosi' i due schermi non se lo rubano
+        with SESSIONS_LOCK:
+            owner = OWNER.get(who)
+            if owner and owner != sid and not page:
+                busy = True
+            else:
+                busy = False
+                OWNER[who] = sid
+        if busy:
+            body = b"in uso altrove"
+            self.send_response(409)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
         bind(get_session(sid, who))
         return True
 
@@ -3074,11 +3217,10 @@ h2{grid-column:1/-1;font-size:16px;margin:8px 0 0}
 .card img{width:100%%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
 .card span{display:block;padding:8px 0;font-size:15px}
 </style>
-<form action="/home"><input name="q" placeholder="cerca"><button type="submit">cerca</button><a class="back" href="%s" style="background:#fff;color:#000;text-decoration:none;padding:8px 14px;font-size:18px">player</a>%s<a class="back" href="/logout" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">esci</a></form>
+<form action="/home"><input name="q" placeholder="cerca"><button type="submit">cerca</button>%s<a class="back" href="/logout" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">esci</a></form>
 <div class="chips">%s</div>
 <div class="grid">%s</div>
-</body>""" % (("/?watch=" + here) if here else "/home",
-              '<a class="back" href="/admin" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">admin</a>' if admin else "",
+</body>""" % ('<a class="back" href="/admin" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">admin</a>' if admin else "",
               chips, "".join(items) or "<p>nessuna ricerca recente</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3600,6 +3742,9 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         if path == "/admin/api/update/check":
             self.json_out(check_update())
             return
+        if path == "/admin/api/ytdlp":
+            self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
+            return
         if path == "/admin/log":
             try:
                 lines = open(os.path.expanduser("~/yt.log")).read().splitlines()
@@ -3697,6 +3842,9 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 if any(c.get("code") == code for c in ACCESS["codes"]):
                     self.json_out({"ok": False, "error": "codice gia' usato"})
                     return
+                if label.lower() == "admin" or any((c.get("label") or "").lower() == label.lower() for c in ACCESS["codes"]):
+                    self.json_out({"ok": False, "error": "nome gia' usato, scegline un altro"})
+                    return
                 ACCESS["codes"].append({"label": label, "code": code, "enabled": True, "created": int(time.time())})
                 access_save()
             _bprint("admin: nuovo codice per", label, flush=True)
@@ -3743,6 +3891,16 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 return
             self.json_out({"ok": True, "version": new})
             threading.Thread(target=restart_self, daemon=True).start()
+            return
+        if what == "ytdlp/update":
+            try:
+                v = ytdlp_update()
+            except Exception as e:
+                _bprint("aggiornamento yt-dlp fallito:", e, flush=True)
+                self.json_out({"ok": False, "error": str(e)}, 500)
+                return
+            _bprint("yt-dlp aggiornato a", v, flush=True)
+            self.json_out({"ok": True, "version": v})
             return
         if what == "restart":
             _bprint("admin: riavvio", flush=True)

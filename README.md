@@ -102,8 +102,9 @@ Environment=YT_ADMIN=una-password-lunga
 ```
 poi `sudo systemctl restart drive-tube`. Apri `/admin`, entra con la password e crea un codice per te e uno per ogni amico. Senza `YT_ADMIN` la pagina admin resta spenta.
 
-- Ogni **browser** ha la sua sessione: video, impostazioni e ffmpeg separati. Con lo stesso codice puoi guardare un video davanti e un altro dietro. Al massimo 3 sessioni per codice (la quarta chiude la meno usata) e 10 in tutto.
+- Ogni codice ha la sua sessione (video, impostazioni e ffmpeg separati) e si usa da **un solo schermo alla volta**: se lo apri su un altro schermo, il primo si ferma e mostra "Guarda qui" per riprenderlo. Per due schermi con video diversi servono due codici. Al massimo 10 sessioni in tutto.
 - Dalla pagina admin vedi le sessioni attive e puoi chiuderle, controlli e installi gli aggiornamenti, riavvii il server, carichi i cookie di YouTube e leggi il log. Nel player non ci sono più aggiornamenti né log.
+- **yt-dlp** si aggiorna dalla pagina admin (sezione *Server*): mostra la versione in uso e l'ultima uscita, e il pulsante scarica la versione stabile in `~/.local/bin/yt-dlp`, che da quel momento ha la precedenza su quella di sistema. Nella stessa riga trovi le versioni di ffmpeg e del runtime JavaScript (node o deno).
 - Iscrizioni, "Guarda più tardi" e "Mi piace" dell'account YouTube collegato compaiono nella home solo all'admin.
 - Disattivare o eliminare un codice chiude subito le sessioni di chi lo usava.
 - Dopo 8 tentativi sbagliati dallo stesso indirizzo in 10 minuti l'accesso si blocca per qualche minuto.
