@@ -88,14 +88,37 @@ Serve un nome di dominio che punta alla macchina (va bene uno gratuito di [DuckD
 
 Porta e percorsi si cambiano con `YT_HTTPS_PORT`, `YT_CERT` e `YT_KEY`.
 
+## Accesso, sessioni e pagina admin
+Si entra solo con un **codice di accesso**: senza codice non si vede nessuna pagina. I codici si creano, disattivano ed eliminano dalla pagina **`/admin`**, che serve solo al proprietario.
+
+La password admin si mette nel servizio sull'EC2 (non sta nel codice né su GitHub):
+```bash
+sudo systemctl edit drive-tube
+```
+e nell'editor scrivi:
+```
+[Service]
+Environment=YT_ADMIN=una-password-lunga
+```
+poi `sudo systemctl restart drive-tube`. Apri `/admin`, entra con la password e crea un codice per te e uno per ogni amico. Senza `YT_ADMIN` la pagina admin resta spenta.
+
+- Ogni **browser** ha la sua sessione: video, impostazioni e ffmpeg separati. Con lo stesso codice puoi guardare un video davanti e un altro dietro. Al massimo 3 sessioni per codice (la quarta chiude la meno usata) e 10 in tutto.
+- Dalla pagina admin vedi le sessioni attive e puoi chiuderle, controlli e installi gli aggiornamenti, riavvii il server, carichi i cookie di YouTube e leggi il log. Nel player non ci sono più aggiornamenti né log.
+- Iscrizioni, "Guarda più tardi" e "Mi piace" dell'account YouTube collegato compaiono nella home solo all'admin.
+- Disattivare o eliminare un codice chiude subito le sessioni di chi lo usava.
+- Dopo 8 tentativi sbagliati dallo stesso indirizzo in 10 minuti l'accesso si blocca per qualche minuto.
+- I codici stanno in `~/.config/drive-tube/access.json`, leggibile solo dal tuo utente.
+
+In http codici e password viaggiano in chiaro. Se condividi il server con altri, usa la porta HTTPS (vedi sopra).
+
 ## Impostazioni
 Dal pannello (ingranaggio in alto a sinistra) si scelgono formato video (H.264 o MJPEG), risoluzione, fluidità e qualità video (queste due solo per MJPEG), qualità audio e buffer audio, con valori predefiniti. In H.264 la risoluzione arriva al massimo a 720p. **Salva e applica** le memorizza nei **cookie del browser**: non esiste nessun file di configurazione sul server. Senza cookie si usano i default scritti nel codice (`SETTINGS` in `yt_mjpeg.py`). Anche le ricerche recenti stanno in un cookie.
 
 ## Cookie di YouTube (facoltativo)
-Se YouTube chiede di verificare che non sei un robot, esporta i cookie di youtube.com in formato Netscape e caricali dalla pagina `/cookies`. Vengono salvati in `~/cookies.txt` sul server.
+Se YouTube chiede di verificare che non sei un robot, esporta i cookie di youtube.com in formato Netscape e caricali dalla pagina admin (sezione *Cookie YouTube*). Vengono salvati in `~/cookies.txt` sul server.
 
 ## Aggiornamenti
-- **Dall'app**: nel pannello, riga *Aggiornamenti*. **Controlla** confronta la versione con quella su `main`; **Installa** scarica il file, ne verifica la sintassi, salva il backup `yt_mjpeg.py.bak` e riavvia il server.
+- **Dalla pagina admin**: sezione *Server*. **Controlla aggiornamenti** confronta la versione con quella su `main`; **Installa** scarica il file, ne verifica la sintassi, salva il backup `yt_mjpeg.py.bak` e riavvia il server.
 - **A mano**: `cd drive-tube && git pull`, poi riavvia il servizio. Se avevi installato dall'app, prima `git checkout yt_mjpeg.py`.
 
 ## Rilasci

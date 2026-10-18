@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+import builtins
+import hashlib
+import hmac
 import html
 import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
+import secrets
 import select
 import socket
 import ssl
@@ -16,7 +20,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "12.1"
+VERSION = "13.0"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -47,12 +51,6 @@ SETTINGS_UI = [
     for k, n, h, d, opts in SETTINGS
 ]
 DEFAULTS = {k: d for k, n, h, d, opts in SETTINGS}
-CFG = dict(DEFAULTS)
-HEIGHT = CFG["HEIGHT"]
-FPS = CFG["FPS"]
-Q = CFG["Q"]
-AUDIO_KBPS = CFG["AUDIO_KBPS"]
-AUDIO_BUFFER_SEC = CFG["AUDIO_BUFFER_SEC"]
 feed_cache = {}
 
 
@@ -79,19 +77,19 @@ def settings_from_cookie(header):
 
 
 def apply_settings(header):
-    """Applica le impostazioni del cookie. Ritorna True se sono cambiate."""
-    global CFG, HEIGHT, FPS, Q, AUDIO_KBPS, AUDIO_BUFFER_SEC
+    """Applica alla sessione corrente le impostazioni del cookie. True se sono cambiate."""
+    s = cur()
     new = settings_from_cookie(header)
-    if new == CFG:
+    if new == s.cfg:
         return False
-    CFG = new
-    HEIGHT = CFG["HEIGHT"]
-    FPS = CFG["FPS"]
-    Q = CFG["Q"]
-    AUDIO_KBPS = CFG["AUDIO_KBPS"]
-    AUDIO_BUFFER_SEC = CFG["AUDIO_BUFFER_SEC"]
-    print("impostazioni:", CFG, flush=True)
+    s.cfg = new
+    print("impostazioni:", new, flush=True)
     return True
+
+
+def C(key):
+    """Impostazione della sessione corrente."""
+    return cur().cfg[key]
 
 
 def recent_from_cookie(header):
@@ -115,9 +113,6 @@ def recent_cookie_header(rows):
     return "yt_recent=%s; Max-Age=31536000; Path=/; SameSite=Lax" % quote(json.dumps(rows, ensure_ascii=False), safe="")
 
 
-# un file di scambio per porta: piu' istanze (porte diverse) possono girare insieme
-FIFO_V = "/tmp/yt_vid_%d.fifo" % PORT
-FIFO_A = "/tmp/yt_aud_%d.fifo" % PORT
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -134,15 +129,11 @@ def yt_cmd(*args):
     cmd += list(args)
     return cmd
 
-PAGE_URL = sys.argv[1] if len(sys.argv) > 1 else ""
-
-
 def set_page(url):
-    global PAGE_URL
-    PAGE_URL = url
+    cur().url = url
     state['duration'] = 0
     state['seek_base'] = 0.0
-    threading.Thread(target=fetch_duration, daemon=True).start()
+    sthread(fetch_duration).start()
     new_session(0)
 
 
@@ -259,39 +250,199 @@ def channel_videos(cid):
     else:
         url = 'https://www.youtube.com/channel/' + cid + '/videos'
     return flat_rows(url, 24)
-lock = threading.Lock()
-state = {
-    "seek_base": 0.0,
-    "t_play": None,
-    "paused": False,
-    "gen": 0,
-    "ff": None,
-    "has_audio": False,
-    "duration": 0,
-    "v_q": deque(),
-    "a_q": deque(),
-    "v_evt": threading.Event(),
-    "a_evt": threading.Event(),
-    "ff_gen": -1,
-    "ff_done": -1,
-    "vmode": "mjpeg",
-    "v_maxpts": None,
-    "v_made": 0,
-    "a_read": 0,
-    "fails": 0,
-    "rate": 0,
-}
+# ================= sessioni =================
+# Ogni browser ha la sua sessione: video, impostazioni, ffmpeg, code e file di
+# scambio. Ogni richiesta HTTP lega la sua sessione al thread che la serve, e
+# i thread avviati con sthread() ereditano la sessione di chi li avvia: cosi'
+# state[...], lock e cur() si riferiscono sempre alla sessione giusta.
+_tls = threading.local()
+_bprint = builtins.print
+
+
+def print(*a, **k):
+    # nel log ogni riga di una sessione porta il suo nome
+    s = getattr(_tls, "s", None)
+    if s is not None:
+        a = ("[%s]" % s.tag,) + a
+    _bprint(*a, **k)
+
+
+def new_state():
+    return {
+        "seek_base": 0.0,
+        "t_play": None,
+        "paused": False,
+        "gen": 0,
+        "ff": None,
+        "has_audio": False,
+        "duration": 0,
+        "v_q": deque(),
+        "a_q": deque(),
+        "v_evt": threading.Event(),
+        "a_evt": threading.Event(),
+        "ff_gen": -1,
+        "ff_done": -1,
+        "vmode": "mjpeg",
+        "v_maxpts": None,
+        "v_made": 0,
+        "a_read": 0,
+        "fails": 0,
+        "rate": 0,
+    }
+
+
+class Session:
+    def __init__(self, sid, who):
+        self.sid = sid
+        self.who = who
+        self.tag = "%s:%s" % (who, sid[:4])
+        self.lock = threading.Lock()
+        self.url = ""
+        self.cfg = dict(DEFAULTS)
+        self.created = self.seen = time.time()
+        base = "/tmp/yt_%d_%s" % (PORT, sid[:16])
+        self.fifo_v = base + "_v.fifo"
+        self.fifo_a = base + "_a.fifo"
+        self.state = new_state()
+
+
+SESSIONS = {}
+SESSIONS_LOCK = threading.Lock()
+MAX_PER_CODE = 3      # sessioni per codice: la quarta chiude la meno usata
+MAX_SESSIONS = 10     # sessioni in tutto
+IDLE_CLOSE = 3 * 3600  # una sessione ferma da 3 ore viene chiusa
+
+
+def cur():
+    s = getattr(_tls, "s", None)
+    if s is None:
+        raise RuntimeError("nessuna sessione legata a questo thread")
+    return s
+
+
+def bind(s):
+    _tls.s = s
+
+
+def sthread(target, *args):
+    """Thread che lavora sulla stessa sessione di chi lo avvia."""
+    s = getattr(_tls, "s", None)
+
+    def run():
+        _tls.s = s
+        target(*args)
+    return threading.Thread(target=run, daemon=True)
+
+
+class _StateProxy:
+    def __getitem__(self, k):
+        return cur().state[k]
+
+    def __setitem__(self, k, v):
+        cur().state[k] = v
+
+    def get(self, k, d=None):
+        return cur().state.get(k, d)
+
+    def __contains__(self, k):
+        return k in cur().state
+
+
+class _LockProxy:
+    def acquire(self, *a, **k):
+        return cur().lock.acquire(*a, **k)
+
+    def release(self):
+        return cur().lock.release()
+
+    def __enter__(self):
+        cur().lock.acquire()
+        return self
+
+    def __exit__(self, *a):
+        cur().lock.release()
+
+
+state = _StateProxy()
+lock = _LockProxy()
+
+
+def get_session(sid, who):
+    drop = []
+    with SESSIONS_LOCK:
+        s = SESSIONS.get(sid)
+        if s is not None and s.who != who:
+            # stesso browser entrato con un altro codice: sessione nuova
+            drop.append(SESSIONS.pop(sid))
+            s = None
+        if s is None:
+            mine = sorted((x for x in SESSIONS.values() if x.who == who), key=lambda x: x.seen)
+            while len(mine) >= MAX_PER_CODE:
+                old = mine.pop(0)
+                drop.append(SESSIONS.pop(old.sid))
+            others = sorted(SESSIONS.values(), key=lambda x: x.seen)
+            while len(others) >= MAX_SESSIONS:
+                old = others.pop(0)
+                drop.append(SESSIONS.pop(old.sid))
+            s = Session(sid, who)
+            SESSIONS[sid] = s
+            _bprint("nuova sessione", s.tag, "(%d attive)" % len(SESSIONS), flush=True)
+        s.seen = time.time()
+    for d in drop:
+        close_session(d)
+    return s
+
+
+def close_session(s):
+    prev = getattr(_tls, "s", None)
+    bind(s)
+    try:
+        with lock:
+            state["gen"] += 1
+            stop_ff()
+        for path in (s.fifo_v, s.fifo_a):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        print("sessione chiusa", flush=True)
+    finally:
+        _tls.s = prev
+
+
+def stop_all():
+    with SESSIONS_LOCK:
+        all_s = list(SESSIONS.values())
+    for s in all_s:
+        try:
+            close_session(s)
+        except Exception:
+            pass
+
+
+def janitor():
+    while True:
+        time.sleep(60)
+        now = time.time()
+        with SESSIONS_LOCK:
+            old = [x for x in SESSIONS.values()
+                   if now - x.seen > IDLE_CLOSE and not (x.state["ff"] and x.state["ff"].poll() is None)]
+            for x in old:
+                SESSIONS.pop(x.sid, None)
+        for x in old:
+            close_session(x)
 
 
 def next_of_current():
-    if not PAGE_URL or "v=" not in PAGE_URL:
+    url = cur().url
+    if not url or "v=" not in url:
         return []
-    cur = PAGE_URL.split("v=")[-1][:11]
-    rows = [(vid, title) for vid, title in related_of(cur) if vid != cur]
+    here = url.split("v=")[-1][:11]
+    rows = [(vid, title) for vid, title in related_of(here) if vid != here]
     if len(rows) < 4:
         try:
             p = subprocess.run(
-                yt_cmd("--print", "%(channel_id)s", "--no-playlist", PAGE_URL),
+                yt_cmd("--print", "%(channel_id)s", "--no-playlist", url),
                 text=True, capture_output=True, timeout=20,
             )
             cid = ""
@@ -302,7 +453,7 @@ def next_of_current():
                     break
             if cid:
                 for vid, title in channel_videos(cid):
-                    if vid != cur and vid not in [x[0] for x in rows]:
+                    if vid != here and vid not in [x[0] for x in rows]:
                         rows.append((vid, title))
                     if len(rows) >= 8:
                         break
@@ -312,13 +463,16 @@ def next_of_current():
 
 
 def fetch_duration():
-    if state["duration"] or not PAGE_URL:
+    url = cur().url
+    if state["duration"] or not url:
         return
     p = subprocess.run(
-        yt_cmd("--print", "duration", "--no-playlist", PAGE_URL),
+        yt_cmd("--print", "duration", "--no-playlist", url),
         text=True,
         capture_output=True,
     )
+    if cur().url != url:
+        return  # nel frattempo e' stato aperto un altro video
     for line in reversed(p.stdout.splitlines()):
         try:
             state["duration"] = int(float(line.strip()))
@@ -336,7 +490,7 @@ def now_pos():
 
 
 def h264_height():
-    return min(HEIGHT, 720)
+    return min(C("HEIGHT"), 720)
 
 
 def ytdlp_format():
@@ -356,7 +510,7 @@ def ytdlp_urls():
             UA,
             "-f",
             ytdlp_format(),
-            PAGE_URL,
+            cur().url,
         ),
         text=True,
         capture_output=True,
@@ -407,7 +561,7 @@ def arm_stop(reason):
             state["gen"] += 1
             stop_ff()
             print("ffmpeg spento, nessuno in ascolto", flush=True)
-    threading.Thread(target=later, daemon=True).start()
+    sthread(later).start()
 
 
 def cancel_stop():
@@ -641,13 +795,13 @@ def ffmpeg_cmd(vsrc, asrc, pos):
         # i frame prima di pos dopo averli decodificati)
         vout = [
             "-map", "0:v:0", "-an", "-c:v", "copy",
-            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", FIFO_V,
+            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", cur().fifo_v,
         ]
     else:
         vout = [
             "-map", "0:v:0", "-an",
-            "-vf", "scale=-2:%d" % HEIGHT, "-r", str(FPS), "-q:v", str(Q),
-            "-f", "mjpeg", FIFO_V,
+            "-vf", "scale=-2:%d" % C("HEIGHT"), "-r", str(C("FPS")), "-q:v", str(C("Q")),
+            "-f", "mjpeg", cur().fifo_v,
         ]
     if state["vmode"] == "h264":
         vout = ["-copyts"] + vout
@@ -661,9 +815,9 @@ def ffmpeg_cmd(vsrc, asrc, pos):
     # niente tag ID3 ne' header Xing: lo stream audio si puo' riprendere a meta'
     aout = [
         "-map", amap, "-vn",
-        "-c:a", "libmp3lame", "-b:a", "%dk" % AUDIO_KBPS, "-ar", "48000",
+        "-c:a", "libmp3lame", "-b:a", "%dk" % C("AUDIO_KBPS"), "-ar", "48000",
         "-id3v2_version", "0", "-write_xing", "0",
-        "-f", "mp3", FIFO_A,
+        "-f", "mp3", cur().fifo_a,
     ]
     return cmd + vout + aout
 
@@ -684,8 +838,8 @@ def read_err(p, tail):
 
 
 def spawn_ff(gen, pos, vsrc, asrc, askip=0):
-    ensure_fifo(FIFO_V)
-    ensure_fifo(FIFO_A)
+    ensure_fifo(cur().fifo_v)
+    ensure_fifo(cur().fifo_a)
     state["v_made"] = 0
     state["a_read"] = 0
     state["urls"] = (vsrc, asrc)
@@ -698,13 +852,13 @@ def spawn_ff(gen, pos, vsrc, asrc, askip=0):
     state["ff"] = p
     print("ffmpeg %s @ %.1fs url=%d" % (state["vmode"], pos, 1 if asrc == vsrc else 2), flush=True)
     pump = pump_h264 if state["vmode"] == "h264" else pump_jpegs
-    threads = [threading.Thread(target=pump, args=(gen, FIFO_V), daemon=True)]
+    threads = [sthread(pump, gen, cur().fifo_v)]
     if asrc:
-        threads.append(threading.Thread(target=pump_audio, args=(gen, FIFO_A, askip), daemon=True))
+        threads.append(sthread(pump_audio, gen, cur().fifo_a, askip))
     for t in threads:
         t.start()
-    threading.Thread(target=read_err, args=(p, tail), daemon=True).start()
-    threading.Thread(target=watch_ff, args=(gen, p, pos, threads, tail), daemon=True).start()
+    sthread(read_err, p, tail).start()
+    sthread(watch_ff, gen, p, pos, threads, tail).start()
 
 
 def watch_ff(gen, p, pos, threads, tail):
@@ -712,8 +866,8 @@ def watch_ff(gen, p, pos, threads, tail):
     # taglia la connessione, URL scaduto, 403) riparte dal punto esatto in cui
     # si era fermato, senza svuotare le code: il browser non se ne accorge.
     p.wait()
-    unblock_fifo(FIFO_V)
-    unblock_fifo(FIFO_A)
+    unblock_fifo(cur().fifo_v)
+    unblock_fifo(cur().fifo_a)
     for t in threads:
         while t.is_alive() and state["gen"] == gen:
             t.join(timeout=1)
@@ -725,8 +879,8 @@ def watch_ff(gen, p, pos, threads, tail):
             mx = state.get("v_maxpts")
             made = max(pos, mx + 1.0 / 30) if mx is not None else pos
         else:
-            made = pos + state["v_made"] / float(FPS)
-        apos = pos + state["a_read"] * 8.0 / (AUDIO_KBPS * 1000)
+            made = pos + state["v_made"] / float(C("FPS"))
+        apos = pos + state["a_read"] * 8.0 / (C("AUDIO_KBPS") * 1000)
         dur = state["duration"] or 0
         rc = p.returncode
         if rc == 0 and (not dur or made >= dur - 3 or (state["v_made"] == 0 and pos >= dur - 30)):
@@ -758,7 +912,7 @@ def watch_ff(gen, p, pos, threads, tail):
     with lock:
         if state["gen"] != gen or state["ff"] is not None:
             return
-        askip = int(max(0.0, apos - made) * AUDIO_KBPS * 1000 / 8)
+        askip = int(max(0.0, apos - made) * C("AUDIO_KBPS") * 1000 / 8)
         print("riparto da %.1fs (audio avanti %.2fs)" % (made, max(0.0, apos - made)), flush=True)
         spawn_ff(gen, made, urls[0], urls[1], askip)
 
@@ -889,7 +1043,6 @@ HTML = """<!doctype html>
 <div id="side">
   <div id="tabs">
     <button type="button" id="tabcfg" class="on">&#9881;</button>
-    <button type="button" id="tablog">>_</button>
   </div>
   <div id="panel"></div>
 </div>
@@ -1985,43 +2138,6 @@ function drawCfg(){
     });
     box.appendChild(row);
   });
-  var upd = document.createElement('div');
-  upd.className = 'row';
-  upd.innerHTML = '<p><b>AGGIORNAMENTI</b><small id="updtxt">Versione ' + document.getElementById('ver').textContent + '</small></p><button type="button" class="wide" id="updbtn">Controlla</button>';
-  var updbtn = upd.querySelector('#updbtn');
-  var updtxt = upd.querySelector('#updtxt');
-  updbtn.onclick = function(ev){
-    ev.stopPropagation();
-    if (updbtn.getAttribute('data-mode') === 'install') {
-      updbtn.disabled = true;
-      updtxt.textContent = 'installo, il server si riavvia...';
-      fetch('/update/install').then(function(r){ return r.json(); }).then(function(j){
-        if (!j.ok) { updtxt.textContent = 'errore: ' + j.error; updbtn.disabled = false; return; }
-        updtxt.textContent = 'installata ' + j.version + ', ricarico...';
-        var tries = 0;
-        (function wait(){
-          setTimeout(function(){
-            fetch('/health').then(function(r){ if (r.ok) location.reload(); else throw 0; }).catch(function(){ if (++tries < 40) wait(); else updtxt.textContent = 'riavvio lento, ricarica la pagina'; });
-          }, 1500);
-        })();
-      }).catch(function(){ updtxt.textContent = 'errore di rete'; updbtn.disabled = false; });
-      return;
-    }
-    updbtn.disabled = true;
-    updtxt.textContent = 'controllo...';
-    fetch('/update/check').then(function(r){ return r.json(); }).then(function(j){
-      updbtn.disabled = false;
-      if (j.error) { updtxt.textContent = j.error; return; }
-      if (j.newer) {
-        updtxt.textContent = 'Nuova versione ' + j.latest + ' (hai ' + j.current + ')';
-        updbtn.textContent = 'Installa';
-        updbtn.setAttribute('data-mode', 'install');
-      } else {
-        updtxt.textContent = 'Sei aggiornato (' + j.current + ')';
-      }
-    }).catch(function(){ updbtn.disabled = false; updtxt.textContent = 'errore di rete'; });
-  };
-  box.appendChild(upd);
   var save = document.createElement('button');
   save.id = 'savecfg';
   save.type = 'button';
@@ -2046,17 +2162,7 @@ function drawCfg(){
 }
 function openTab(which){
   document.getElementById('tabcfg').className = which === 'cfg' ? 'on' : '';
-  document.getElementById('tablog').className = which === 'log' ? 'on' : '';
   var box = document.getElementById('panel');
-  if (which === 'log') {
-    box.innerHTML = '<div id="logbox">carico...</div>';
-    fetch('/log.txt').then(function(r){ return r.text(); }).then(function(t){
-      var el = document.getElementById('logbox');
-      el.textContent = t;
-      box.scrollTop = box.scrollHeight;
-    });
-    return;
-  }
   if (!cfgNow) {
     box.textContent = 'config non letta';
     return;
@@ -2072,7 +2178,6 @@ document.getElementById('menu').addEventListener('click', function(ev){
   if (open) openTab('cfg');
 }, true);
 document.getElementById('tabcfg').onclick = function(ev){ ev.stopPropagation(); openTab('cfg'); };
-document.getElementById('tablog').onclick = function(ev){ ev.stopPropagation(); openTab('log'); };
 function seekAt(ev){
   if (!DURATION) return;
   var x = ev.clientX;
@@ -2167,7 +2272,7 @@ def install_update():
 def restart_self():
     time.sleep(1.0)
     try:
-        stop_ff()
+        stop_all()
     except Exception:
         pass
     os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -2189,7 +2294,6 @@ button{background:#2a5;border:0;padding:8px 18px}
 #bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;background:#1b1b1b;border:1px solid #333;padding:8px 10px;margin:0 0 10px}
 #bar a{color:#6cf;text-decoration:none}
 #bar .sp{flex:1}
-#updbtn{background:#345;padding:6px 14px}
 #updtxt{color:#aaa;font-size:17px}
 </style></head><body>
 <div id="bar">
@@ -2197,7 +2301,6 @@ button{background:#2a5;border:0;padding:8px 18px}
   <a href="/test">Test browser</a>
   <span class="sp"></span>
   <span id="updtxt">Versione __VER__</span>
-  <button type="button" id="updbtn">Controlla aggiornamenti</button>
 </div>
 <h1>Test H.264 in WebAssembly</h1>
 <div id="clock"></div>
@@ -2428,42 +2531,6 @@ async function run(){
   play(data, srcFps, mode);
 }
 document.getElementById('go').onclick = function(){ run(); };
-
-// aggiornamenti: stessa logica del pannello dell'app
-(function(){
-  var btn = document.getElementById('updbtn'), txt = document.getElementById('updtxt');
-  btn.onclick = function(){
-    if (btn.getAttribute('data-mode') === 'install') {
-      btn.disabled = true;
-      txt.textContent = 'installo, il server si riavvia...';
-      fetch('/update/install').then(function(r){ return r.json(); }).then(function(j){
-        if (!j.ok) { txt.textContent = 'errore: ' + j.error; btn.disabled = false; return; }
-        txt.textContent = 'installata ' + j.version + ', ricarico...';
-        var tries = 0;
-        (function wait(){
-          setTimeout(function(){
-            fetch('/health').then(function(r){ if (r.ok) location.reload(); else throw 0; })
-              .catch(function(){ if (++tries < 40) wait(); else txt.textContent = 'riavvio lento, ricarica la pagina'; });
-          }, 1500);
-        })();
-      }).catch(function(){ txt.textContent = 'errore di rete'; btn.disabled = false; });
-      return;
-    }
-    btn.disabled = true;
-    txt.textContent = 'controllo...';
-    fetch('/update/check').then(function(r){ return r.json(); }).then(function(j){
-      btn.disabled = false;
-      if (j.error) { txt.textContent = j.error; return; }
-      if (j.newer) {
-        txt.textContent = 'Nuova versione ' + j.latest + ' (hai ' + j.current + ')';
-        btn.textContent = 'Installa';
-        btn.setAttribute('data-mode', 'install');
-      } else {
-        txt.textContent = 'Versione ' + j.current + ', aggiornata';
-      }
-    }).catch(function(){ btn.disabled = false; txt.textContent = 'errore di rete'; });
-  };
-})();
 </script></body></html>
 """
 
@@ -2576,18 +2643,374 @@ async function realDecode(){
 </script></body></html>"""
 
 
+ADMIN_HTML = r"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>drive-tube admin</title>
+<style>
+body{background:#111;color:#eee;font:17px/1.4 sans-serif;margin:0;padding:12px 14px 40px}
+h1{font-size:22px;margin:0}
+h2{font-size:18px;margin:26px 0 8px;border-bottom:1px solid #333;padding-bottom:6px}
+a{color:#6cf;text-decoration:none}
+#bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;background:#1b1b1b;border:1px solid #333;padding:10px 12px}
+#bar .sp{flex:1}
+table{width:100%;border-collapse:collapse;font-size:16px}
+th,td{text-align:left;padding:7px 6px;border-bottom:1px solid #2a2a2a;vertical-align:middle}
+th{color:#aaa;font-weight:normal}
+code{font:16px monospace;background:#222;padding:2px 6px;border-radius:4px;user-select:all}
+input{font-size:17px;background:#222;color:#fff;border:1px solid #555;padding:6px 8px;border-radius:6px}
+button{font-size:16px;background:#345;color:#fff;border:0;padding:7px 12px;border-radius:6px;cursor:pointer}
+button.go{background:#2a5}
+button.warn{background:#933}
+button:disabled{opacity:.5}
+.off{color:#777}
+.ok{color:#4f4}.ko{color:#f66}.na{color:#aaa}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+#log{white-space:pre-wrap;font:12px/1.4 monospace;background:#0b0b0b;border:1px solid #333;padding:8px;max-height:60vh;overflow:auto;display:none}
+#msg{min-height:22px;color:#fc6}
+small{color:#999}
+</style></head><body>
+<div id="bar">
+  <h1>drive-tube admin</h1>
+  <span class="na">versione __VER__</span>
+  <span class="sp"></span>
+  <a href="/home">App</a>
+  <a href="/test">Test browser</a>
+  <a href="/wasmtest">Test H.264</a>
+  <a href="/logout">Esci</a>
+</div>
+<div id="msg"></div>
+
+<h2>Codici di accesso</h2>
+<small>Chi ha un codice attivo puo' usare l'app. Ogni browser ha la sua sessione (al massimo __MAXC__ per codice).</small>
+<table id="codes"><thead><tr><th>Nome</th><th>Codice</th><th>Stato</th><th></th></tr></thead><tbody></tbody></table>
+<div class="row">
+  <input id="newlabel" placeholder="nome (es. Marco)" size="16">
+  <input id="newcode" placeholder="codice (vuoto = casuale)" size="20">
+  <button class="go" id="addcode">Aggiungi</button>
+</div>
+
+<h2>Sessioni attive</h2>
+<table id="sess"><thead><tr><th>Chi</th><th>Video</th><th>Modo</th><th>ffmpeg</th><th>Ultima attivita'</th><th></th></tr></thead><tbody></tbody></table>
+
+<h2>Server</h2>
+<div class="row">
+  <span id="updtxt" class="na">Versione __VER__</span>
+  <button id="updbtn">Controlla aggiornamenti</button>
+  <button class="warn" id="restart">Riavvia il server</button>
+</div>
+
+<h2>Cookie YouTube</h2>
+<div class="row"><a href="/cookies">Carica i cookie di youtube.com</a> <small>(servono se YouTube chiede di verificare che non sei un robot)</small></div>
+
+<h2>Log</h2>
+<div class="row"><button id="logbtn">Mostra il log</button></div>
+<div id="log"></div>
+
+<script>
+function $(id){ return document.getElementById(id); }
+function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function say(t, bad){ $('msg').textContent = t || ''; $('msg').style.color = bad ? '#f66' : '#fc6'; }
+function api(path, data){
+  return fetch('/admin/api/' + path, {
+    method: data === undefined ? 'GET' : 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: data === undefined ? undefined : JSON.stringify(data)
+  }).then(function(r){
+    return r.json().catch(function(){ return {ok: false, error: 'HTTP ' + r.status}; });
+  });
+}
+function ago(s){
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + ' s fa';
+  if (s < 3600) return Math.round(s / 60) + ' min fa';
+  return (s / 3600).toFixed(1) + ' ore fa';
+}
+function render(st){
+  var cb = $('codes').querySelector('tbody');
+  cb.innerHTML = '';
+  if (!st.codes.length) cb.innerHTML = '<tr><td colspan="4" class="na">nessun codice: aggiungine uno qui sotto</td></tr>';
+  st.codes.forEach(function(c){
+    var tr = document.createElement('tr');
+    var on = c.enabled !== false;
+    tr.innerHTML = '<td' + (on ? '' : ' class="off"') + '>' + esc(c.label) + '</td><td><code>' + esc(c.code) + '</code></td>' +
+      '<td class="' + (on ? 'ok' : 'ko') + '">' + (on ? 'attivo' : 'disattivato') + '</td>' +
+      '<td><button data-a="toggle">' + (on ? 'Disattiva' : 'Attiva') + '</button> <button class="warn" data-a="del">Elimina</button></td>';
+    tr.querySelector('[data-a=toggle]').onclick = function(){ api('code/toggle', {code: c.code}).then(done); };
+    tr.querySelector('[data-a=del]').onclick = function(){
+      if (!confirm("Eliminare il codice di " + c.label + "? Chi lo usa non potrà più entrare.")) return;
+      api('code/del', {code: c.code}).then(done);
+    };
+    cb.appendChild(tr);
+  });
+  var sb = $('sess').querySelector('tbody');
+  sb.innerHTML = '';
+  if (!st.sessions.length) sb.innerHTML = '<tr><td colspan="6" class="na">nessuna sessione</td></tr>';
+  st.sessions.forEach(function(x){
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + esc(x.who) + ' <small>' + esc(x.sid.slice(0, 4)) + '</small></td>' +
+      '<td>' + (x.video ? '<a href="https://www.youtube.com/watch?v=' + esc(x.video) + '" target="_blank">' + esc(x.video) + '</a>' : '<span class="na">-</span>') +
+      (x.err ? ' <small class="ko">' + esc(x.err) + '</small>' : '') + '</td>' +
+      '<td>' + esc(x.vmode) + '</td><td class="' + (x.ff ? 'ok' : 'na') + '">' + (x.ff ? 'attivo' : 'fermo') + '</td>' +
+      '<td>' + ago(x.seen) + '</td><td><button class="warn">Chiudi</button></td>';
+    tr.querySelector('button').onclick = function(){ api('session/stop', {sid: x.sid}).then(done); };
+    sb.appendChild(tr);
+  });
+}
+function load(){ return api('state').then(function(st){ if (st.ok === false) { say(st.error, true); return; } render(st); }); }
+function done(r){
+  if (r && r.ok === false) say(r.error, true); else say(r && r.msg ? r.msg : '');
+  load();
+}
+$('addcode').onclick = function(){
+  var label = $('newlabel').value.trim();
+  if (!label) { say('scrivi un nome per il codice', true); return; }
+  api('code/add', {label: label, code: $('newcode').value.trim()}).then(function(r){
+    if (r.ok) { $('newlabel').value = ''; $('newcode').value = ''; say('codice per ' + label + ': ' + r.code); load(); }
+    else say(r.error, true);
+  });
+};
+$('updbtn').onclick = function(){
+  var btn = $('updbtn'), txt = $('updtxt');
+  if (btn.getAttribute('data-mode') === 'install') {
+    btn.disabled = true;
+    txt.textContent = 'installo, il server si riavvia...';
+    api('update/install', {}).then(function(j){
+      if (!j.ok) { txt.textContent = 'errore: ' + j.error; btn.disabled = false; return; }
+      txt.textContent = 'installata ' + j.version + ', ricarico...';
+      waitRestart(txt);
+    });
+    return;
+  }
+  btn.disabled = true;
+  txt.textContent = 'controllo...';
+  api('update/check').then(function(j){
+    btn.disabled = false;
+    if (j.error) { txt.textContent = j.error; return; }
+    if (j.newer) {
+      txt.textContent = 'Nuova versione ' + j.latest + ' (hai ' + j.current + ')';
+      btn.textContent = 'Installa';
+      btn.setAttribute('data-mode', 'install');
+    } else txt.textContent = 'Versione ' + j.current + ', aggiornata';
+  });
+};
+function waitRestart(txt){
+  var tries = 0;
+  (function wait(){
+    setTimeout(function(){
+      fetch('/health').then(function(r){ if (r.ok) location.reload(); else throw 0; })
+        .catch(function(){ if (++tries < 40) wait(); else txt.textContent = 'riavvio lento, ricarica la pagina'; });
+    }, 1500);
+  })();
+}
+$('restart').onclick = function(){
+  if (!confirm('Riavviare il server? Tutti i video in corso si fermano.')) return;
+  $('updtxt').textContent = 'riavvio...';
+  api('restart', {}).then(function(){ waitRestart($('updtxt')); });
+};
+$('logbtn').onclick = function(){
+  var box = $('log');
+  fetch('/admin/log').then(function(r){ return r.text(); }).then(function(t){
+    box.style.display = 'block';
+    box.textContent = t;
+    box.scrollTop = box.scrollHeight;
+    $('logbtn').textContent = 'Aggiorna il log';
+  });
+};
+load();
+setInterval(load, 5000);
+</script>
+</body></html>
+"""
+
+LOGIN_HTML = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>drive-tube</title>
+<style>
+body{background:#111;color:#fff;font-family:sans-serif;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+form{display:flex;flex-direction:column;gap:16px;width:min(420px,90vw)}
+h1{font-size:30px;margin:0 0 6px}
+input{font-size:28px;padding:12px;background:#222;color:#fff;border:1px solid #555;border-radius:10px;text-align:center;letter-spacing:2px}
+button{font-size:26px;padding:14px;background:#fff;color:#000;border:0;border-radius:10px}
+.msg{color:#f88;min-height:24px;font-size:20px}
+.note{color:#999;font-size:16px}
+a{color:#888;font-size:15px;text-align:center}
+</style>
+<form method="post" action="__ACTION__">
+<h1>__TITLE__</h1>
+<div class="msg">__MSG__</div>
+<input name="__FIELD__" type="__TYPE__" autocomplete="off" autocapitalize="off" autofocus required placeholder="__PH__">
+<button type="submit">Entra</button>
+<div class="note">__NOTE__</div>
+__LINK__
+</form>"""
+
+
+# ================= accesso =================
+# Si entra solo con un codice valido (creati dalla pagina /admin) oppure come
+# admin. La password admin sta nella variabile d'ambiente YT_ADMIN del servizio.
+ACCESS_DIR = os.path.expanduser("~/.config/drive-tube")
+ACCESS_FILE = os.path.join(ACCESS_DIR, "access.json")
+ACCESS_LOCK = threading.Lock()
+ADMIN_PASS = os.environ.get("YT_ADMIN", "")
+CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789"   # niente 0/o, 1/l/i
+LOGIN_FAILS = {}
+
+
+def access_load():
+    try:
+        with open(ACCESS_FILE) as f:
+            d = json.load(f)
+        if isinstance(d, dict) and isinstance(d.get("codes"), list):
+            return d
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        _bprint("access.json illeggibile:", e, flush=True)
+    return {"codes": []}
+
+
+def access_save():
+    os.makedirs(ACCESS_DIR, mode=0o700, exist_ok=True)
+    tmp = ACCESS_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(ACCESS, f, indent=1)
+    os.replace(tmp, ACCESS_FILE)
+
+
+ACCESS = access_load()
+
+
+def new_code():
+    return "".join(secrets.choice(CODE_CHARS) for _ in range(10))
+
+
+def code_label(code):
+    if not code:
+        return None
+    for c in ACCESS["codes"]:
+        if c.get("enabled", True) and hmac.compare_digest(str(c.get("code", "")), code):
+            return c.get("label") or c["code"][:4]
+    return None
+
+
+def code_label_any(label):
+    return any(c.get("enabled", True) and (c.get("label") or c["code"][:4]) == label for c in ACCESS["codes"])
+
+
+def admin_token():
+    if not ADMIN_PASS:
+        return ""
+    return hmac.new(ADMIN_PASS.encode(), b"drive-tube-admin", hashlib.sha256).hexdigest()
+
+
+def is_admin(header):
+    t = cookie_value(header, "dt_admin")
+    return bool(ADMIN_PASS and t) and hmac.compare_digest(t, admin_token())
+
+
+def who_is(header):
+    """Chi fa la richiesta: 'admin', l'etichetta del codice, oppure None."""
+    if is_admin(header):
+        return "admin"
+    return code_label(cookie_value(header, "dt_code"))
+
+
+def login_blocked(ip):
+    now = time.time()
+    times = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 600]
+    LOGIN_FAILS[ip] = times
+    return len(times) >= 8
+
+
+def login_failed(ip):
+    LOGIN_FAILS.setdefault(ip, []).append(time.time())
+
+
+def cookie_hdr(name, value, max_age=31536000, strict=False):
+    return "%s=%s; Max-Age=%d; Path=/; SameSite=%s; HttpOnly" % (
+        name, value, max_age, "Strict" if strict else "Lax")
+
+
+# pagine HTML (senza accesso si va al login); il resto risponde 401
+HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest", "/cookies"}
+
+
 class Handler(BaseHTTPRequestHandler):
+    def end_headers(self):
+        for k, v in getattr(self, "_extra", []):
+            self.send_header(k, v)
+        super().end_headers()
+
+    def add_header(self, k, v):
+        if not hasattr(self, "_extra"):
+            self._extra = []
+        self._extra.append((k, v))
+
+    def redirect(self, where):
+        self.send_response(302)
+        self.send_header("Location", where)
+        self.end_headers()
+
+    def client_ip(self):
+        return self.client_address[0] if self.client_address else "?"
+
     def do_GET(self):
         u = urlparse(self.path)
-        q = parse_qs(u.query)
         path = u.path
-        if path not in ("/buf", "/status"):
+        hdr = self.headers.get("Cookie")
+        if path == "/favicon.ico":
+            self.send_error(404)
+            return
+        if path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
+        if path == "/login":
+            self.page_login()
+            return
+        if path == "/logout":
+            self.add_header("Set-Cookie", cookie_hdr("dt_code", "", 0))
+            self.add_header("Set-Cookie", cookie_hdr("dt_admin", "", 0, strict=True))
+            self.redirect("/login")
+            return
+        if path == "/admin" or path.startswith("/admin/"):
+            self.admin_get(u, path)
+            return
+        if self.enter(path):
+            try:
+                self._get(u, parse_qs(u.query), path)
+            finally:
+                _tls.s = None
+
+    def enter(self, path):
+        """Controlla l'accesso e lega la sessione del browser al thread."""
+        hdr = self.headers.get("Cookie")
+        who = who_is(hdr)
+        if not who:
+            if path in HTML_PATHS or not path.startswith(("/stream", "/ctrl", "/buf", "/status")):
+                self.redirect("/login")
+            else:
+                self.send_error(401, "serve il codice di accesso")
+            return False
+        self.who = who
+        sid = cookie_value(hdr, "dt_sid")
+        if not (len(sid) == 32 and all(c in "0123456789abcdef" for c in sid)):
+            sid = secrets.token_hex(16)
+            self.add_header("Set-Cookie", cookie_hdr("dt_sid", sid))
+        bind(get_session(sid, who))
+        return True
+
+    def _get(self, u, q, path):
+        if path not in ("/buf", "/status", "/dur", "/prime", "/ready"):
             print("GET", path, flush=True)
 
         if path == "/home":
             q = (parse_qs(u.query).get("q") or [""])[0]
             recent = push_recent(q, recent_from_cookie(self.headers.get("Cookie")))
-            cur = PAGE_URL.split("v=")[-1][:11] if "v=" in PAGE_URL else ""
+            url_now = cur().url
+            here = url_now.split("v=")[-1][:11] if "v=" in url_now else ""
+            admin = self.who == "admin"
             items = []
             seen = set()
             # collect queries to run in parallel
@@ -2602,8 +3025,10 @@ class Handler(BaseHTTPRequestHandler):
             # prefetch all searches + related + account in parallel
             with ThreadPoolExecutor(max_workers=6) as pool:
                 search_futures = {query: pool.submit(search_yt, query) for query in all_queries}
-                related_future = pool.submit(related_of, cur) if cur else None
-                account_future = pool.submit(account_sections)
+                related_future = pool.submit(related_of, here) if here else None
+                # iscrizioni, "guarda piu' tardi" e "mi piace" sono dell'account del
+                # proprietario (cookie YouTube): solo l'admin li vede
+                account_future = pool.submit(account_sections) if admin else None
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
                 for vid, title, kind, url in search_futures[q].result():
@@ -2613,24 +3038,24 @@ class Handler(BaseHTTPRequestHandler):
                             % (vid, title.replace("<", ""))
                         )
                     else:
-                        items.extend(cards([(vid, title)], seen, cur))
+                        items.extend(cards([(vid, title)], seen, here))
             for query in shown_q:
                 items.append("<h2>%s</h2>" % query.replace("<", ""))
                 for vid, title, kind, url in search_futures[query].result():
                     if kind == "channel":
                         continue
-                    items.extend(cards([(vid, title)], seen, cur))
-            if cur and related_future:
+                    items.extend(cards([(vid, title)], seen, here))
+            if here and related_future:
                 items.append("<h2>Suggeriti per questo video</h2>")
-                items.extend(cards(related_future.result(), seen, cur))
-            for name, rows in account_future.result():
+                items.extend(cards(related_future.result(), seen, here))
+            for name, rows in (account_future.result() if account_future else []):
                 if name.startswith("<"):
                     items.append(name)
                     continue
                 if not rows:
                     continue
                 items.append("<h2>%s</h2>" % name)
-                items.extend(cards(rows, seen, cur))
+                items.extend(cards(rows, seen, here))
             chips = "".join(
                 '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
@@ -2649,10 +3074,12 @@ h2{grid-column:1/-1;font-size:16px;margin:8px 0 0}
 .card img{width:100%%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
 .card span{display:block;padding:8px 0;font-size:15px}
 </style>
-<form action="/home"><input name="q" placeholder="cerca"><button type="submit">cerca</button><a class="back" href="%s" style="background:#fff;color:#000;text-decoration:none;padding:8px 14px;font-size:18px">player</a><a class="back" href="/cookies" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">cookie</a></form>
+<form action="/home"><input name="q" placeholder="cerca"><button type="submit">cerca</button><a class="back" href="%s" style="background:#fff;color:#000;text-decoration:none;padding:8px 14px;font-size:18px">player</a>%s<a class="back" href="/logout" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">esci</a></form>
 <div class="chips">%s</div>
 <div class="grid">%s</div>
-</body>""" % (("/?watch=" + cur) if cur else "/home", chips, "".join(items) or "<p>nessuna ricerca recente</p>")
+</body>""" % (("/?watch=" + here) if here else "/home",
+              '<a class="back" href="/admin" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">admin</a>' if admin else "",
+              chips, "".join(items) or "<p>nessuna ricerca recente</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Set-Cookie", recent_cookie_header(recent))
@@ -2742,33 +3169,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.wfile.write(body.encode("utf-8"))
             return
 
-        if path == "/log.txt":
-            try:
-                lines = open(os.path.expanduser("~/yt.log")).read().splitlines()
-            except Exception:
-                lines = ["log non trovato: ~/yt.log"]
-            lines = [x for x in lines if "GET /log" not in x and "GET /buf" not in x and "GET /status" not in x and "GET /config" not in x and "GET /set" not in x]
-            body = "\n".join(lines[-400:])
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(body.encode())
-            return
-
-        if path == "/logs":
-            try:
-                lines = open(os.path.expanduser("~/yt.log")).read().splitlines()
-            except Exception:
-                lines = []
-            lines = [x for x in lines if "GET /log" not in x and "GET /logs" not in x][-80:]
-            body = "<pre style='background:#111;color:#ddd;padding:12px;white-space:pre-wrap'>%s</pre>" % "\n".join(lines).replace("<", "")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8"))
-            return
-
         if path == "/buf":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -2783,33 +3183,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write((state.get("err") or "").encode("utf-8"))
-            return
-
-        if path == "/update/check":
-            body = json.dumps(check_update())
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(body.encode())
-            return
-
-        if path == "/update/install":
-            try:
-                new = install_update()
-                out, code = {"ok": True, "version": new}, 200
-            except Exception as e:
-                out, code = {"ok": False, "error": str(e)}, 500
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(out).encode())
-            if code == 200:
-                try:
-                    self.wfile.flush()
-                except Exception:
-                    pass
-                threading.Thread(target=restart_self, daemon=True).start()
             return
 
         if path == "/test":
@@ -2854,7 +3227,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         if path == "/h264test":
             # qualche secondo di H.264 originale di YouTube, senza ricodifica (Annex-B)
             vid = (q.get("v") or [""])[0].strip()
-            url = ("https://www.youtube.com/watch?v=" + vid) if vid else PAGE_URL
+            url = ("https://www.youtube.com/watch?v=" + vid) if vid else cur().url
             if not url:
                 self.send_error(400, "apri prima un video nell'app o indica un id")
                 return
@@ -2937,12 +3310,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 ff.wait()
             return
 
-        if path == "/health":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
-            return
-
         if path == "/prime":
             self.send_response(200)
             self.end_headers()
@@ -2961,20 +3328,20 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             cfg_changed = apply_settings(self.headers.get("Cookie"))
             watch = (q.get("watch") or [""])[0]
             tpos = (q.get("t") or ["0"])[0]
-            if watch and watch not in PAGE_URL:
+            if watch and watch not in cur().url:
                 set_page("https://www.youtube.com/watch?v=" + watch)
             try:
                 if float(tpos) > 0:
                     state["seek_base"] = float(tpos)
             except ValueError:
                 pass
-            if not PAGE_URL:
+            if not cur().url:
                 self.send_response(302)
                 self.send_header("Location", "/home")
                 self.end_headers()
                 return
             if not state["duration"]:
-                threading.Thread(target=fetch_duration, daemon=True).start()
+                sthread(fetch_duration).start()
             cancel_stop()
             try:
                 want = float(tpos or 0)
@@ -2982,8 +3349,8 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 want = 0
             if cfg_changed or not (ffmpeg_alive() and abs(want - now_pos()) < 8):
                 new_session(want)
-            vid = PAGE_URL.split("v=")[-1][:11] if "v=" in PAGE_URL else ""
-            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(FPS)).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(CFG)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(CFG.get("VMODE", 1)))).replace("WATCHID", vid).encode("utf-8")
+            vid = cur().url.split("v=")[-1][:11] if "v=" in cur().url else ""
+            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("WATCHID", vid).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -2997,7 +3364,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 apply_settings(self.headers.get("Cookie"))
                 mode = (q.get("mode") or [""])[0]
                 if mode not in ("h264", "mjpeg"):
-                    mode = "h264" if CFG.get("VMODE", 1) else "mjpeg"
+                    mode = "h264" if cur().cfg.get("VMODE", 1) else "mjpeg"
                 new_session(want, mode)
                 msg = "seek %.0f %s" % (state["seek_base"], mode)
             elif "pause" in q:
@@ -3131,6 +3498,9 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
 
         if path == "/cookies":
+            if self.who != "admin":
+                self.redirect("/admin")
+                return
             page = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>cookie</title>
 <style>body{background:#111;color:#fff;font-family:sans-serif;padding:16px}a{color:#fff}input,button{font-size:18px;margin-top:12px}</style>
 <p>Esporta i cookie di youtube.com in formato Netscape, poi caricali qui.</p>
@@ -3139,24 +3509,249 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
 <input type="file" name="f" accept=".txt,text/plain" required>
 <button>carica</button>
 </form>
-<p><a href="/home">home</a></p>"""
+<p><a href="/admin">admin</a> &middot; <a href="/home">home</a></p>"""
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(page.encode())
             return
 
-        if path == "/favicon.ico":
-            self.send_error(404)
-            return
-        self.send_error(404)
+        # indirizzo sconosciuto: si torna alla home
+        self.redirect("/home")
 
-    def do_POST(self):
-        if urlparse(self.path).path != "/cookies":
-            self.send_error(404)
+    # ---------- login ----------
+    def page_login(self, msg="", status=200, admin=False):
+        if admin:
+            fill = {"__ACTION__": "/admin/login", "__TITLE__": "Admin", "__FIELD__": "password",
+                    "__TYPE__": "password", "__PH__": "password admin", "__NOTE__": "",
+                    "__LINK__": '<a href="/login">accesso con codice</a>'}
+        else:
+            note = "" if ACCESS["codes"] else "Nessun codice creato: il proprietario lo crea dalla pagina admin."
+            fill = {"__ACTION__": "/login", "__TITLE__": "drive-tube", "__FIELD__": "code",
+                    "__TYPE__": "text", "__PH__": "codice di accesso", "__NOTE__": note,
+                    "__LINK__": '<a href="/admin">admin</a>'}
+        fill["__MSG__"] = html.escape(msg)
+        body = LOGIN_HTML
+        for k, v in fill.items():
+            body = body.replace(k, v)
+        body = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def json_out(self, obj, status=200):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # ---------- admin (GET) ----------
+    def admin_get(self, u, path):
+        hdr = self.headers.get("Cookie")
+        if not ADMIN_PASS:
+            body = ("<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<body style='background:#111;color:#eee;font-family:sans-serif;padding:20px;line-height:1.5'>"
+                    "<h1>Pagina admin spenta</h1><p>Per attivarla aggiungi la password admin al servizio sull'EC2:</p>"
+                    "<pre style='background:#222;padding:10px'>sudo systemctl edit drive-tube</pre>"
+                    "<p>e scrivi:</p><pre style='background:#222;padding:10px'>[Service]\nEnvironment=YT_ADMIN=la-tua-password</pre>"
+                    "<p>poi <code>sudo systemctl restart drive-tube</code>.</p></body>").encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
             return
+        if not is_admin(hdr):
+            if path.startswith("/admin/api/") or path == "/admin/log":
+                self.json_out({"ok": False, "error": "accesso admin scaduto, ricarica la pagina"}, 403)
+            else:
+                self.page_login(admin=True)
+            return
+        if path == "/admin":
+            body = (ADMIN_HTML.replace("__VER__", VERSION).replace("__MAXC__", str(MAX_PER_CODE))).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/admin/api/state":
+            now = time.time()
+            with SESSIONS_LOCK:
+                sess = list(SESSIONS.values())
+            rows = []
+            for x in sorted(sess, key=lambda x: -x.seen):
+                ff = x.state.get("ff")
+                rows.append({
+                    "sid": x.sid, "who": x.who,
+                    "video": x.url.split("v=")[-1][:11] if "v=" in x.url else "",
+                    "vmode": x.state.get("vmode"), "ff": bool(ff and ff.poll() is None),
+                    "seen": now - x.seen, "err": x.state.get("err") or "",
+                })
+            with ACCESS_LOCK:
+                codes = [dict(c) for c in ACCESS["codes"]]
+            self.json_out({"ok": True, "version": VERSION, "codes": codes, "sessions": rows})
+            return
+        if path == "/admin/api/update/check":
+            self.json_out(check_update())
+            return
+        if path == "/admin/log":
+            try:
+                lines = open(os.path.expanduser("~/yt.log")).read().splitlines()
+            except Exception:
+                lines = ["log non trovato: ~/yt.log"]
+            lines = [x for x in lines if "GET /admin" not in x]
+            body = "\n".join(lines[-500:]).encode("utf-8", "replace")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.redirect("/admin")
+
+    # ---------- POST ----------
+    def do_POST(self):
+        path = urlparse(self.path).path
+        hdr = self.headers.get("Cookie")
         n = int(self.headers.get("Content-Length") or 0)
+        if n > 2000000:
+            self.send_error(413)
+            return
         raw = self.rfile.read(n)
+        if path == "/login":
+            self.post_login(raw)
+        elif path == "/admin/login":
+            self.post_admin_login(raw)
+        elif path.startswith("/admin/api/"):
+            if not ADMIN_PASS or not is_admin(hdr):
+                self.json_out({"ok": False, "error": "accesso admin scaduto, ricarica la pagina"}, 403)
+                return
+            try:
+                data = json.loads(raw.decode("utf-8") or "{}")
+            except ValueError:
+                data = {}
+            self.admin_api(path[len("/admin/api/"):], data if isinstance(data, dict) else {})
+        elif path == "/cookies":
+            if not ADMIN_PASS or not is_admin(hdr):
+                self.send_error(403)
+                return
+            self.post_cookies(raw)
+        else:
+            self.send_error(404)
+
+    def post_login(self, raw):
+        ip = self.client_ip()
+        if login_blocked(ip):
+            self.page_login("Troppi tentativi sbagliati: riprova tra qualche minuto.", 429)
+            return
+        code = (parse_qs(raw.decode("utf-8", "replace")).get("code") or [""])[0].strip().lower()
+        label = code_label(code)
+        if not label:
+            login_failed(ip)
+            _bprint("accesso negato da", ip, flush=True)
+            self.page_login("Codice non valido.", 403)
+            return
+        _bprint("accesso:", label, "da", ip, flush=True)
+        self.add_header("Set-Cookie", cookie_hdr("dt_code", code))
+        sid = cookie_value(self.headers.get("Cookie"), "dt_sid")
+        if not (len(sid) == 32 and all(c in "0123456789abcdef" for c in sid)):
+            self.add_header("Set-Cookie", cookie_hdr("dt_sid", secrets.token_hex(16)))
+        self.redirect("/home")
+
+    def post_admin_login(self, raw):
+        ip = self.client_ip()
+        if not ADMIN_PASS:
+            self.redirect("/admin")
+            return
+        if login_blocked(ip):
+            self.page_login("Troppi tentativi sbagliati: riprova tra qualche minuto.", 429, admin=True)
+            return
+        pw = (parse_qs(raw.decode("utf-8", "replace")).get("password") or [""])[0]
+        if not hmac.compare_digest(pw.encode(), ADMIN_PASS.encode()):
+            login_failed(ip)
+            _bprint("accesso admin negato da", ip, flush=True)
+            self.page_login("Password sbagliata.", 403, admin=True)
+            return
+        _bprint("accesso admin da", ip, flush=True)
+        self.add_header("Set-Cookie", cookie_hdr("dt_admin", admin_token(), 30 * 86400, strict=True))
+        self.redirect("/admin")
+
+    def admin_api(self, what, data):
+        if what == "code/add":
+            label = str(data.get("label") or "").strip()[:40]
+            code = str(data.get("code") or "").strip().lower()
+            if not label:
+                self.json_out({"ok": False, "error": "manca il nome"})
+                return
+            if code and not (4 <= len(code) <= 40 and all(c.isalnum() or c in "-_" for c in code) and code.isascii()):
+                self.json_out({"ok": False, "error": "codice: da 4 a 40 tra lettere, numeri, - e _"})
+                return
+            with ACCESS_LOCK:
+                code = code or new_code()
+                if any(c.get("code") == code for c in ACCESS["codes"]):
+                    self.json_out({"ok": False, "error": "codice gia' usato"})
+                    return
+                ACCESS["codes"].append({"label": label, "code": code, "enabled": True, "created": int(time.time())})
+                access_save()
+            _bprint("admin: nuovo codice per", label, flush=True)
+            self.json_out({"ok": True, "code": code})
+            return
+        if what in ("code/toggle", "code/del"):
+            code = str(data.get("code") or "")
+            with ACCESS_LOCK:
+                hit = [c for c in ACCESS["codes"] if c.get("code") == code]
+                if not hit:
+                    self.json_out({"ok": False, "error": "codice non trovato"})
+                    return
+                if what == "code/del":
+                    ACCESS["codes"] = [c for c in ACCESS["codes"] if c.get("code") != code]
+                else:
+                    hit[0]["enabled"] = not hit[0].get("enabled", True)
+                access_save()
+                label = hit[0].get("label")
+                off = what == "code/del" or not hit[0].get("enabled", True)
+            if off:
+                # chi usava quel codice viene chiuso subito
+                with SESSIONS_LOCK:
+                    gone = [x for x in SESSIONS.values() if x.who == label and not code_label_any(label)]
+                    for x in gone:
+                        SESSIONS.pop(x.sid, None)
+                for x in gone:
+                    close_session(x)
+            _bprint("admin:", what, label, flush=True)
+            self.json_out({"ok": True})
+            return
+        if what == "session/stop":
+            sid = str(data.get("sid") or "")
+            with SESSIONS_LOCK:
+                x = SESSIONS.pop(sid, None)
+            if x:
+                close_session(x)
+            self.json_out({"ok": True, "msg": "sessione chiusa" if x else "sessione gia' chiusa"})
+            return
+        if what == "update/install":
+            try:
+                new = install_update()
+            except Exception as e:
+                self.json_out({"ok": False, "error": str(e)}, 500)
+                return
+            self.json_out({"ok": True, "version": new})
+            threading.Thread(target=restart_self, daemon=True).start()
+            return
+        if what == "restart":
+            _bprint("admin: riavvio", flush=True)
+            self.json_out({"ok": True})
+            threading.Thread(target=restart_self, daemon=True).start()
+            return
+        self.json_out({"ok": False, "error": "azione sconosciuta"}, 404)
+
+    def post_cookies(self, raw):
         text = raw.decode("utf-8", "replace")
         if "filename=" in text:
             parts = text.split("\r\n\r\n", 1)
@@ -3170,19 +3765,22 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
         with open(COOKIES, "w") as f:
             f.write(text if text.endswith("\n") else text + "\n")
-        state["err"] = ""
-        print("cookie aggiornati", flush=True)
-        self.send_response(302)
-        self.send_header("Location", "/home")
-        self.end_headers()
+        os.chmod(COOKIES, 0o600)
+        with SESSIONS_LOCK:
+            for x in SESSIONS.values():
+                x.state["err"] = ""
+        _bprint("cookie YouTube aggiornati", flush=True)
+        self.redirect("/admin")
 
     def log_message(self, *a):
         pass
 
 
-class QuietTLSServer(ThreadingHTTPServer):
-    # handshake falliti (scanner, certificati rifiutati, connessioni chiuse) non
-    # riempiono il log di traceback
+class QuietServer(ThreadingHTTPServer):
+    # connessioni chiuse a meta' (pagina cambiata, scanner, handshake TLS falliti)
+    # non riempiono il log di traceback
+    daemon_threads = True
+
     def handle_error(self, request, client_address):
         if isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError, TimeoutError)):
             return
@@ -3201,7 +3799,7 @@ def serve_https():
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cert, key)
-        srv = QuietTLSServer(("0.0.0.0", port), Handler)
+        srv = QuietServer(("0.0.0.0", port), Handler)
         # handshake nel thread della richiesta, non nel ciclo che accetta le connessioni
         srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
     except Exception as e:
@@ -3212,10 +3810,13 @@ def serve_https():
 
 
 if __name__ == "__main__":
-    fetch_duration()
-    print("http://0.0.0.0:%d/  duration=%ss" % (PORT, state["duration"]))
+    print("http://0.0.0.0:%d/" % PORT, flush=True)
+    print("codici attivi: %d, admin %s" % (
+        sum(1 for c in ACCESS["codes"] if c.get("enabled", True)),
+        "attivo" if ADMIN_PASS else "spento (manca YT_ADMIN)"), flush=True)
+    threading.Thread(target=janitor, daemon=True).start()
     serve_https()
     try:
-        ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+        QuietServer(("0.0.0.0", PORT), Handler).serve_forever()
     finally:
-        stop_ff()
+        stop_all()
