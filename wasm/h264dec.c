@@ -20,9 +20,16 @@ static int incap;
 static uint8_t *rgba;
 static int rgbacap;
 static int frames_out;
+static uint8_t *cur;   // input ancora da consumare per push()/next()
+static int left;
 
 EXPORT("dec_init") int dec_init(void) {
     av_log_set_level(AV_LOG_QUIET);
+    if (ctx) avcodec_free_context(&ctx);
+    if (par) { av_parser_close(par); par = NULL; }
+    av_packet_free(&pkt);
+    av_frame_free(&frm);
+    left = 0;
     const AVCodec *c = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!c) return -1;
     ctx = avcodec_alloc_context3(c);
@@ -68,6 +75,28 @@ EXPORT("feed") int feed(int size) {
         if (outsz) {
             pkt->data = out; pkt->size = outsz;
             avcodec_send_packet(ctx, pkt);  // anche se rifiuta, svuoto i frame pronti
+            drain();
+        }
+    }
+    return frames_out - before;
+}
+
+// decodifica un frame alla volta: push(n) consegna n byte gia' scritti in
+// in_buf(); next() decodifica fino al primo frame (0 se l'input e' finito);
+// left() dice quanti byte restano prima di poter fare un altro push.
+EXPORT("push") void push(int size) { cur = inbuf; left = size; }
+EXPORT("left") int left_bytes(void) { return left; }
+EXPORT("next") int next(void) {
+    int before = frames_out;
+    while (left > 0 && frames_out == before) {
+        uint8_t *out; int outsz;
+        int used = av_parser_parse2(par, ctx, &out, &outsz, cur, left,
+                                    AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+        if (used < 0) { left = 0; break; }
+        cur += used; left -= used;
+        if (outsz) {
+            pkt->data = out; pkt->size = outsz;
+            avcodec_send_packet(ctx, pkt);
             drain();
         }
     }
