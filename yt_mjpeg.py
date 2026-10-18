@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.1"
+VERSION = "13.2"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -121,7 +121,8 @@ UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 HEADERS = "User-Agent: " + UA + "\r\nReferer: https://www.youtube.com/\r\n"
-COOKIES = os.path.expanduser("~/cookies.txt")
+# vecchio file dei cookie YouTube: non si usa piu', viene cancellato all'avvio
+OLD_COOKIES = os.path.expanduser("~/cookies.txt")
 
 
 YTDLP_LOCAL = os.path.expanduser("~/.local/bin/yt-dlp")
@@ -190,10 +191,132 @@ def ytdlp_update():
     return v
 
 
+# ================= PO token (bgutil) =================
+# Senza cookie, dagli IP dei server YouTube chiede spesso la verifica anti-bot.
+# Il plugin bgutil per yt-dlp ottiene i "PO token" che YouTube controlla nei
+# browser veri; li genera un piccolo server locale (porta 4416). Se trova il
+# server compilato in ~/bgutil-ytdlp-pot-provider, drive-tube lo avvia e lo tiene
+# acceso da solo; se gira gia' (per esempio in Docker) lo usa e basta.
+POT_HOME = os.path.expanduser("~/bgutil-ytdlp-pot-provider")
+POT_MAIN = os.path.join(POT_HOME, "server", "build", "main.js")
+POT_PLUGIN_DIR = os.path.expanduser("~/.config/yt-dlp/plugins")
+POT_ZIP = os.path.join(POT_PLUGIN_DIR, "bgutil-ytdlp-pot-provider.zip")
+POT_ZIP_URL = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip"
+POT_PING = "http://127.0.0.1:4416/ping"
+POT_TEST_VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+_pot = {"proc": None, "last_start": 0.0}
+
+
+def pot_ping():
+    try:
+        with urllib.request.urlopen(POT_PING, timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        return data if isinstance(data, dict) else {"ok": True}
+    except Exception:
+        return None
+
+
+def pot_plugin_files():
+    out = []
+    for base in (POT_PLUGIN_DIR, os.path.expanduser("~/yt-dlp-plugins")):
+        try:
+            out += [os.path.join(base, n) for n in os.listdir(base) if "bgutil" in n.lower()]
+        except OSError:
+            pass
+    return out
+
+
+def pot_server_log(proc):
+    n = 0
+    try:
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").rstrip()
+            if line and n < 50:
+                _bprint("[pot]", line[:200], flush=True)
+                n += 1
+    except Exception:
+        pass
+
+
+def pot_supervisor():
+    # avvia (e riavvia) il server bgutil se e' compilato e non risponde gia'
+    while True:
+        try:
+            p = _pot["proc"]
+            alive = bool(p and p.poll() is None)
+            node = shutil.which("node")
+            if (not alive and os.path.isfile(POT_MAIN) and node and pot_ping() is None
+                    and time.time() - _pot["last_start"] > 60):
+                _pot["last_start"] = time.time()
+                _bprint("avvio il server PO token (bgutil)", flush=True)
+                _pot["proc"] = subprocess.Popen(
+                    [node, "build/main.js"], cwd=os.path.dirname(os.path.dirname(POT_MAIN)),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                )
+                threading.Thread(target=pot_server_log, args=(_pot["proc"],), daemon=True).start()
+        except Exception as e:
+            _bprint("server PO token:", e, flush=True)
+        time.sleep(20)
+
+
+def pot_status():
+    ping = pot_ping()
+    p = _pot["proc"]
+    node = shutil.which("node")
+    return {
+        "plugin": pot_plugin_files(),
+        "server": ping is not None,
+        "server_version": (ping or {}).get("version", ""),
+        "managed": bool(p and p.poll() is None),
+        "built": os.path.isfile(POT_MAIN),
+        "node": tool_version([node, "--version"]) if node else "",
+    }
+
+
+def pot_install_plugin():
+    import zipfile
+    os.makedirs(POT_PLUGIN_DIR, exist_ok=True)
+    tmp = POT_ZIP + ".new"
+    req = urllib.request.Request(POT_ZIP_URL, headers={"User-Agent": "drive-tube"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+        shutil.copyfileobj(r, f)
+    try:
+        with zipfile.ZipFile(tmp) as z:
+            if not any(n.startswith("yt_dlp_plugins/") for n in z.namelist()):
+                raise RuntimeError("lo zip scaricato non contiene un plugin di yt-dlp")
+    except zipfile.BadZipFile:
+        os.remove(tmp)
+        raise RuntimeError("il file scaricato non e' uno zip valido")
+    os.replace(tmp, POT_ZIP)
+    return POT_ZIP
+
+
+def pot_test():
+    """Chiede a yt-dlp i formati di un video breve e riporta le righe sul PO token."""
+    try:
+        p = subprocess.run(
+            yt_cmd("-v", "--simulate", "--no-playlist", "-f", "bv*[height<=360]+ba/b",
+                   "--user-agent", UA, POT_TEST_VIDEO),
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as e:
+        return {"ok": False, "lines": ["yt-dlp non partito: %s" % e]}
+    keep = []
+    for line in (p.stderr or "").splitlines() + (p.stdout or "").splitlines():
+        low = line.lower()
+        if ("[pot" in low or "po token" in low or "error" in low or "sign in" in low
+                or "js runtime" in low or "jsc" in low or "challenge" in low):
+            keep.append(re.sub(r"https?://\S+", "<url>", line.strip())[:220])
+    tokens = any("generating a" in x.lower() and "po token" in x.lower() for x in keep)
+    return {"ok": p.returncode == 0, "token": tokens, "lines": keep[-25:] or ["nessuna riga utile nell'output"]}
+
+
 def yt_cmd(*args):
     cmd = [ytdlp_bin()]
-    if os.path.isfile(COOKIES):
-        cmd += ["--cookies", COOKIES]
+    # yt-dlp attiva da solo solo Deno: se c'e' soltanto Node va abilitato,
+    # altrimenti alcune richieste a YouTube falliscono
+    if not shutil.which("deno") and shutil.which("node"):
+        cmd += ["--js-runtimes", "node"]
     cmd += list(args)
     return cmd
 
@@ -266,35 +389,6 @@ def related_of(vid):
     if not vid:
         return []
     return flat_rows("https://www.youtube.com/playlist?list=RD" + vid, 8)
-
-
-def account_sections():
-    if not os.path.isfile(COOKIES):
-        return [("<p>manca ~/cookies.txt</p>", [])]
-    jobs = [
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 1, 15),
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 16, 15),
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 31, 15),
-        ("Più tardi", "https://www.youtube.com/playlist?list=WL", 1, 12),
-        ("Mi piace", "https://www.youtube.com/playlist?list=LL", 1, 12),
-    ]
-    out = {}
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        futs = {pool.submit(flat_rows, url, n, start): name for name, url, start, n in jobs}
-        for fut in futs:
-            name = futs[fut]
-            try:
-                rows = fut.result()
-            except Exception as e:
-                print("feed", name, e, flush=True)
-                rows = []
-            got = out.setdefault(name, [])
-            have = set(v for v, t in got)
-            for vid, title in rows:
-                if vid not in have:
-                    got.append((vid, title))
-                    have.add(vid)
-    return [(name, out.get(name) or []) for name in ("Iscrizioni", "Più tardi", "Mi piace")]
 
 
 def cards(rows, seen, cur):
@@ -591,7 +685,7 @@ def ytdlp_urls():
         err = p.stderr or ""
         print(err, flush=True)
         if "Sign in to confirm" in err or "not a bot" in err:
-            state["err"] = "Cookie scaduti: YouTube chiede di verificare che non sei un robot."
+            state["err"] = "Verifica anti-bot di YouTube: controlla il PO token nella pagina admin."
         elif state["vmode"] == "h264":
             # il client passa da solo a MJPEG quando vede questo errore
             state["err"] = "H264 non disponibile per questo video"
@@ -600,7 +694,7 @@ def ytdlp_urls():
         raise RuntimeError(state["err"])
     lines = [x for x in p.stdout.strip().splitlines() if x.startswith("http")]
     if not lines:
-        state["err"] = "Nessuno stream. Cookie scaduti o video bloccato."
+        state["err"] = "Nessuno stream: video bloccato o non disponibile."
         raise RuntimeError(state["err"])
     for i, u in enumerate(lines):
         print("url[%d] %s ..." % (i, u[:80]), flush=True)
@@ -1278,7 +1372,7 @@ function preload(auto){
     if (my !== gen) return;
     fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
       if (my !== gen) return;
-      if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
+      if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
         msg.textContent = err;
         go.style.display = 'block';
         ui(err);
@@ -1719,7 +1813,7 @@ function startBoth(){
   });
     var watch = setInterval(function(){
       fetch('/status').then(function(r){ return r.text(); }).then(function(err){
-        if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) { msg.textContent = err; ui(err); clearInterval(watch); }
+        if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) { msg.textContent = err; ui(err); clearInterval(watch); }
       });
       fetch('/buf').then(function(r){ return r.text(); }).then(function(t){
         var parts = t.split(' ');
@@ -2081,7 +2175,7 @@ function beginH264(my, t0){
         hFallback(err);
         return;
       }
-      if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0)) {
+      if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0)) {
         blocked = true;
         clearInterval(fillWait);
         stopVideo();
@@ -2089,7 +2183,7 @@ function beginH264(my, t0){
         overlay.style.display = 'flex';
         msg.style.display = 'block';
         go.style.display = 'none';
-        msg.innerHTML = err + '<br><a href="/cookies" style="color:#fff">carica i cookie nuovi</a>';
+        msg.textContent = err;
         ui(err);
       }
     });
@@ -2158,7 +2252,7 @@ function beginAt(sec){
       pollRate();
       fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
         if (my !== gen) return;
-        if (err && (err.indexOf('Cookie') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
+        if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
           blocked = true;
           clearInterval(fillWait);
           stopVideo();
@@ -2166,7 +2260,7 @@ function beginAt(sec){
           overlay.style.display = 'flex';
           msg.style.display = 'block';
           go.style.display = 'none';
-          msg.innerHTML = err + '<br><a href="/cookies" style="color:#fff">carica i cookie nuovi</a>';
+          msg.textContent = err;
           ui(err);
         }
       });
@@ -2797,8 +2891,15 @@ small{color:#999}
 </div>
 <div class="row"><small id="tools"></small></div>
 
-<h2>Cookie YouTube</h2>
-<div class="row"><a href="/cookies">Carica i cookie di youtube.com</a> <small>(servono se YouTube chiede di verificare che non sei un robot)</small></div>
+<h2>PO token (verifica anti-bot di YouTube)</h2>
+<small>Senza cookie, i token del plugin bgutil fanno passare le richieste a YouTube. Servono il plugin e il suo server locale (vedi README).</small>
+<div class="row"><span id="potplug" class="na">plugin: controllo...</span></div>
+<div class="row"><span id="potsrv" class="na">server: controllo...</span></div>
+<div class="row">
+  <button id="potinst">Installa / aggiorna il plugin</button>
+  <button id="pottest">Prova con un video</button>
+</div>
+<div id="potout" style="white-space:pre-wrap;font:12px/1.4 monospace;background:#0b0b0b;border:1px solid #333;padding:8px;display:none"></div>
 
 <h2>Log</h2>
 <div class="row"><button id="logbtn">Mostra il log</button></div>
@@ -2938,8 +3039,36 @@ $('ytdbtn').onclick = function(){
     loadYtdlp(false);
   });
 };
+function loadPot(){
+  return api('pot').then(function(j){
+    $('potplug').textContent = j.plugin.length ? 'plugin installato: ' + j.plugin.join(', ') : 'plugin non installato';
+    $('potplug').className = j.plugin.length ? 'ok' : 'ko';
+    var t = j.server ? 'server attivo' + (j.server_version ? ' (versione ' + j.server_version + ')' : '') + (j.managed ? ', avviato da drive-tube' : '')
+      : (j.built ? 'server compilato ma non risponde' + (j.node ? '' : ': manca node') : 'server non installato in ~/bgutil-ytdlp-pot-provider');
+    $('potsrv').textContent = t + (j.node ? ' · node ' + j.node : '');
+    $('potsrv').className = j.server ? 'ok' : 'ko';
+  });
+}
+$('potinst').onclick = function(){
+  var b = $('potinst'); b.disabled = true; say('scarico il plugin...');
+  api('pot/plugin', {}).then(function(j){
+    b.disabled = false;
+    if (!j.ok) { say('plugin non installato: ' + j.error, true); return; }
+    say('plugin installato in ' + j.path); loadPot();
+  });
+};
+$('pottest').onclick = function(){
+  var b = $('pottest'), out = $('potout'); b.disabled = true;
+  out.style.display = 'block'; out.textContent = 'chiedo a YouTube un video di prova, puo\u0027 servire un minuto...';
+  api('pot/test', {}).then(function(j){
+    b.disabled = false;
+    out.textContent = (j.ok ? (j.token ? 'OK: video raggiungibile e PO token generato' : 'OK: video raggiungibile (nessun PO token usato)') : 'ERRORE: YouTube ha rifiutato la richiesta') + String.fromCharCode(10, 10) + (j.lines || []).join(String.fromCharCode(10));
+    out.style.color = j.ok ? '#8f8' : '#f88';
+  });
+};
 load();
 loadYtdlp(false);
+loadPot();
 setInterval(load, 5000);
 </script>
 </body></html>
@@ -3055,7 +3184,7 @@ def cookie_hdr(name, value, max_age=31536000, strict=False):
 
 
 # pagine HTML (senza accesso si va al login); il resto risponde 401
-HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest", "/cookies"}
+HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3165,13 +3294,10 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 shown_q.append(query)
             all_queries = ([q] if q else []) + shown_q
-            # prefetch all searches + related + account in parallel
+            # ricerche e suggeriti in parallelo
             with ThreadPoolExecutor(max_workers=6) as pool:
                 search_futures = {query: pool.submit(search_yt, query) for query in all_queries}
                 related_future = pool.submit(related_of, here) if here else None
-                # iscrizioni, "guarda piu' tardi" e "mi piace" sono dell'account del
-                # proprietario (cookie YouTube): solo l'admin li vede
-                account_future = pool.submit(account_sections) if admin else None
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
                 for vid, title, kind, url in search_futures[q].result():
@@ -3191,14 +3317,6 @@ class Handler(BaseHTTPRequestHandler):
             if here and related_future:
                 items.append("<h2>Suggeriti per questo video</h2>")
                 items.extend(cards(related_future.result(), seen, here))
-            for name, rows in (account_future.result() if account_future else []):
-                if name.startswith("<"):
-                    items.append(name)
-                    continue
-                if not rows:
-                    continue
-                items.append("<h2>%s</h2>" % name)
-                items.extend(cards(rows, seen, here))
             chips = "".join(
                 '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
@@ -3639,25 +3757,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 arm_stop("video client via")
             return
 
-        if path == "/cookies":
-            if self.who != "admin":
-                self.redirect("/admin")
-                return
-            page = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>cookie</title>
-<style>body{background:#111;color:#fff;font-family:sans-serif;padding:16px}a{color:#fff}input,button{font-size:18px;margin-top:12px}</style>
-<p>Esporta i cookie di youtube.com in formato Netscape, poi caricali qui.</p>
-<p>Dal browser normale: esporta e chiudi subito tutte le schede di YouTube, altrimenti il file muore.</p>
-<form method="post" action="/cookies" enctype="multipart/form-data">
-<input type="file" name="f" accept=".txt,text/plain" required>
-<button>carica</button>
-</form>
-<p><a href="/admin">admin</a> &middot; <a href="/home">home</a></p>"""
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(page.encode())
-            return
-
         # indirizzo sconosciuto: si torna alla home
         self.redirect("/home")
 
@@ -3742,6 +3841,9 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         if path == "/admin/api/update/check":
             self.json_out(check_update())
             return
+        if path == "/admin/api/pot":
+            self.json_out(pot_status())
+            return
         if path == "/admin/api/ytdlp":
             self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
             return
@@ -3782,11 +3884,6 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             except ValueError:
                 data = {}
             self.admin_api(path[len("/admin/api/"):], data if isinstance(data, dict) else {})
-        elif path == "/cookies":
-            if not ADMIN_PASS or not is_admin(hdr):
-                self.send_error(403)
-                return
-            self.post_cookies(raw)
         else:
             self.send_error(404)
 
@@ -3902,33 +3999,25 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             _bprint("yt-dlp aggiornato a", v, flush=True)
             self.json_out({"ok": True, "version": v})
             return
+        if what == "pot/plugin":
+            try:
+                where = pot_install_plugin()
+            except Exception as e:
+                _bprint("plugin PO token non installato:", e, flush=True)
+                self.json_out({"ok": False, "error": str(e)}, 500)
+                return
+            _bprint("plugin PO token installato in", where, flush=True)
+            self.json_out({"ok": True, "path": where})
+            return
+        if what == "pot/test":
+            self.json_out(pot_test())
+            return
         if what == "restart":
             _bprint("admin: riavvio", flush=True)
             self.json_out({"ok": True})
             threading.Thread(target=restart_self, daemon=True).start()
             return
         self.json_out({"ok": False, "error": "azione sconosciuta"}, 404)
-
-    def post_cookies(self, raw):
-        text = raw.decode("utf-8", "replace")
-        if "filename=" in text:
-            parts = text.split("\r\n\r\n", 1)
-            if len(parts) == 2:
-                text = parts[1].rsplit("\r\n--", 1)[0]
-        if "youtube.com" not in text or "\t" not in text:
-            self.send_response(400)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"file non valido: servono i cookie Netscape di youtube.com")
-            return
-        with open(COOKIES, "w") as f:
-            f.write(text if text.endswith("\n") else text + "\n")
-        os.chmod(COOKIES, 0o600)
-        with SESSIONS_LOCK:
-            for x in SESSIONS.values():
-                x.state["err"] = ""
-        _bprint("cookie YouTube aggiornati", flush=True)
-        self.redirect("/admin")
 
     def log_message(self, *a):
         pass
@@ -3973,6 +4062,13 @@ if __name__ == "__main__":
         sum(1 for c in ACCESS["codes"] if c.get("enabled", True)),
         "attivo" if ADMIN_PASS else "spento (manca YT_ADMIN)"), flush=True)
     threading.Thread(target=janitor, daemon=True).start()
+    threading.Thread(target=pot_supervisor, daemon=True).start()
+    if os.path.exists(OLD_COOKIES):
+        try:
+            os.remove(OLD_COOKIES)
+            print("cancellato il vecchio file dei cookie YouTube (%s)" % OLD_COOKIES, flush=True)
+        except OSError as e:
+            print("non riesco a cancellare %s: %s" % (OLD_COOKIES, e), flush=True)
     serve_https()
     try:
         QuietServer(("0.0.0.0", PORT), Handler).serve_forever()

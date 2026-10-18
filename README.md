@@ -32,7 +32,7 @@ Installa `yt-dlp` (binario autonomo, non richiede altre librerie Python):
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod a+rx /usr/local/bin/yt-dlp
 ```
-Le versioni recenti di yt-dlp possono richiedere un runtime JavaScript per YouTube: se nel log compaiono avvisi, installa anche `nodejs` (o Deno).
+yt-dlp ha bisogno di un runtime JavaScript per YouTube: installa **Node.js 22 o successivo** (serve anche al PO token provider, vedi sotto) oppure Deno. Se c'è solo Node, drive-tube lo attiva da solo per yt-dlp (`--js-runtimes node`). Su Debian/Ubuntu il pacchetto `nodejs` è spesso più vecchio: usa i pacchetti di [NodeSource](https://github.com/nodesource/distributions).
 
 Scarica e avvia:
 ```bash
@@ -105,7 +105,6 @@ poi `sudo systemctl restart drive-tube`. Apri `/admin`, entra con la password e 
 - Ogni codice ha la sua sessione (video, impostazioni e ffmpeg separati) e si usa da **un solo schermo alla volta**: se lo apri su un altro schermo, il primo si ferma e mostra "Guarda qui" per riprenderlo. Per due schermi con video diversi servono due codici. Al massimo 10 sessioni in tutto.
 - Dalla pagina admin vedi le sessioni attive e puoi chiuderle, controlli e installi gli aggiornamenti, riavvii il server, carichi i cookie di YouTube e leggi il log. Nel player non ci sono più aggiornamenti né log.
 - **yt-dlp** si aggiorna dalla pagina admin (sezione *Server*): mostra la versione in uso e l'ultima uscita, e il pulsante scarica la versione stabile in `~/.local/bin/yt-dlp`, che da quel momento ha la precedenza su quella di sistema. Nella stessa riga trovi le versioni di ffmpeg e del runtime JavaScript (node o deno).
-- Iscrizioni, "Guarda più tardi" e "Mi piace" dell'account YouTube collegato compaiono nella home solo all'admin.
 - Disattivare o eliminare un codice chiude subito le sessioni di chi lo usava.
 - Dopo 8 tentativi sbagliati dallo stesso indirizzo in 10 minuti l'accesso si blocca per qualche minuto.
 - I codici stanno in `~/.config/drive-tube/access.json`, leggibile solo dal tuo utente.
@@ -115,8 +114,20 @@ In http codici e password viaggiano in chiaro. Se condividi il server con altri,
 ## Impostazioni
 Dal pannello (ingranaggio in alto a sinistra) si scelgono formato video (H.264 o MJPEG), risoluzione, fluidità e qualità video (queste due solo per MJPEG), qualità audio e buffer audio, con valori predefiniti. In H.264 la risoluzione arriva al massimo a 720p. **Salva e applica** le memorizza nei **cookie del browser**: non esiste nessun file di configurazione sul server. Senza cookie si usano i default scritti nel codice (`SETTINGS` in `yt_mjpeg.py`). Anche le ricerche recenti stanno in un cookie.
 
-## Cookie di YouTube (facoltativo)
-Se YouTube chiede di verificare che non sei un robot, esporta i cookie di youtube.com in formato Netscape e caricali dalla pagina admin (sezione *Cookie YouTube*). Vengono salvati in `~/cookies.txt` sul server.
+## PO token: YouTube senza cookie
+drive-tube non usa cookie né account YouTube: la home mostra solo le ricerche. Dagli IP dei server cloud YouTube chiede spesso una verifica anti-bot; la supera il plugin [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), che genera i "PO token" che YouTube controlla nei browser veri. È fatto di due parti:
+
+1. **Il server locale** (porta 4416, solo su `127.0.0.1`). Con Node 22 o successivo, una volta sola:
+   ```bash
+   git clone --single-branch --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
+   cd ~/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc
+   ```
+   drive-tube trova `~/bgutil-ytdlp-pot-provider/server/build/main.js` e avvia il server da solo, riavviandolo se si ferma. In alternativa puoi usare Docker: `docker run --name bgutil-provider -d --init --restart unless-stopped -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider` (drive-tube lo usa se risponde). Controlla nella pagina delle release se c'è una versione più recente di 2.0.2.
+2. **Il plugin di yt-dlp**: dalla pagina admin, sezione *PO token*, **Installa / aggiorna il plugin** lo scarica in `~/.config/yt-dlp/plugins/`.
+
+Poi **Prova con un video** chiede a YouTube un video breve e mostra se la richiesta passa e se il token è stato generato. Se YouTube rifiuta comunque, l'IP del server potrebbe essere bloccato: il PO token non aggira i blocchi per indirizzo.
+
+All'avvio drive-tube cancella il vecchio file `~/cookies.txt`, se c'è.
 
 ## Aggiornamenti
 - **Dalla pagina admin**: sezione *Server*. **Controlla aggiornamenti** confronta la versione con quella su `main`; **Installa** scarica il file, ne verifica la sintassi, salva il backup `yt_mjpeg.py.bak` e riavvia il server.
