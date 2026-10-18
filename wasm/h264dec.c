@@ -1,6 +1,11 @@
 // Decoder H.264 per il browser: parser + decoder di FFmpeg, compilati in WebAssembly.
-// JS scrive i byte dello stream Annex-B in in_buf() e chiama feed(n);
-// per ogni frame decodificato viene chiamata la funzione JS on_frame(...).
+// Due modi d'uso:
+//  - stream Annex-B grezzo: JS scrive i byte in in_buf() e chiama feed(n) oppure
+//    push(n)/next(); il parser di FFmpeg divide i frame;
+//  - pacchetti gia' divisi (player): decode(n, pts) per ogni pacchetto, con il
+//    suo tempo in secondi.
+// Per ogni frame decodificato viene chiamata la funzione JS on_frame(...), che
+// riceve anche il tempo del frame in secondi (-1 se sconosciuto).
 #include <libavcodec/avcodec.h>
 #include <libavutil/log.h>
 #include <stdlib.h>
@@ -9,7 +14,7 @@
 #define EXPORT(n) __attribute__((export_name(n)))
 __attribute__((import_module("env"), import_name("on_frame")))
 void on_frame(const uint8_t *y, const uint8_t *u, const uint8_t *v,
-              int ly, int lu, int lv, int w, int h);
+              int ly, int lu, int lv, int w, int h, double pts);
 
 static AVCodecContext *ctx;
 static AVCodecParserContext *par;
@@ -34,6 +39,7 @@ EXPORT("dec_init") int dec_init(void) {
     if (!c) return -1;
     ctx = avcodec_alloc_context3(c);
     ctx->thread_count = 1;
+    ctx->pkt_timebase = (AVRational){1, 1000000};
     ctx->flags2 |= AV_CODEC_FLAG2_FAST;
     if (avcodec_open2(ctx, c, NULL) < 0) return -2;
     par = av_parser_init(AV_CODEC_ID_H264);
@@ -55,9 +61,11 @@ EXPORT("in_buf") uint8_t *in_buf(int size) {
 static void drain(void) {
     while (avcodec_receive_frame(ctx, frm) == 0) {
         frames_out++;
+        int64_t ts = frm->pts != AV_NOPTS_VALUE ? frm->pts : frm->best_effort_timestamp;
         on_frame(frm->data[0], frm->data[1], frm->data[2],
                  frm->linesize[0], frm->linesize[1], frm->linesize[2],
-                 frm->width, frm->height);
+                 frm->width, frm->height,
+                 ts == AV_NOPTS_VALUE ? -1.0 : ts / 1000000.0);
         av_frame_unref(frm);
     }
 }
@@ -74,6 +82,7 @@ EXPORT("feed") int feed(int size) {
         p += used; size -= used;
         if (outsz) {
             pkt->data = out; pkt->size = outsz;
+            pkt->pts = AV_NOPTS_VALUE;
             avcodec_send_packet(ctx, pkt);  // anche se rifiuta, svuoto i frame pronti
             drain();
         }
@@ -100,6 +109,18 @@ EXPORT("next") int next(void) {
             drain();
         }
     }
+    return frames_out - before;
+}
+
+// un pacchetto (un frame codificato) gia' scritto in in_buf(), con il suo pts
+EXPORT("decode") int decode(int size, double pts) {
+    int before = frames_out;
+    pkt->data = inbuf; pkt->size = size;
+    pkt->pts = pts >= 0 ? (int64_t)(pts * 1000000.0 + 0.5) : AV_NOPTS_VALUE;
+    pkt->dts = AV_NOPTS_VALUE;
+    avcodec_send_packet(ctx, pkt);
+    pkt->pts = AV_NOPTS_VALUE;
+    drain();
     return frames_out - before;
 }
 

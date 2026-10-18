@@ -1,7 +1,13 @@
 # drive-tube
 Player YouTube leggero per il browser dell'auto (MJPEG + Web Audio API).
 
-Un unico file Python: `yt-dlp` e `ffmpeg` trasformano lo stream YouTube in MJPEG (video) e MP3 (audio), il browser li riproduce su canvas e AudioContext con l'audio come orologio principale.
+Un unico file Python. `yt-dlp` trova lo stream YouTube e `ffmpeg` lo prepara per il browser, che lo riproduce su canvas e AudioContext, senza tag `<video>` o `<audio>`, con l'audio come orologio principale.
+
+Due formati video, scelti nelle impostazioni:
+- **H.264** (predefinito): il video arriva così com'è da YouTube, senza ricodifica, e lo decodifica il browser con il decoder di FFmpeg compilato in WebAssembly, disegnandolo con WebGL. Pesa circa 0,5-2 Mbit/s e il server quasi non lavora. Non richiede HTTPS. Serve un browser con WebAssembly SIMD (Chrome 91 o successivi; il browser Tesla lo ha).
+- **MJPEG**: il server trasforma il video in immagini JPEG. Pesa molto di più (decine di Mbit/s) ma funziona ovunque. Si usa da solo quando H.264 non è disponibile per un video o il browser non ha WebAssembly SIMD.
+
+L'audio, in entrambi i casi, è MP3 decodificato dal browser.
 
 ## Requisiti
 Una macchina Linux con:
@@ -83,7 +89,7 @@ Serve un nome di dominio che punta alla macchina (va bene uno gratuito di [DuckD
 Porta e percorsi si cambiano con `YT_HTTPS_PORT`, `YT_CERT` e `YT_KEY`.
 
 ## Impostazioni
-Dal pannello (ingranaggio in alto a sinistra) si scelgono risoluzione, fluidità, qualità video, qualità audio e buffer audio, con valori predefiniti. **Salva e applica** le memorizza nei **cookie del browser**: non esiste nessun file di configurazione sul server. Senza cookie si usano i default scritti nel codice (`SETTINGS` in `yt_mjpeg.py`). Anche le ricerche recenti stanno in un cookie.
+Dal pannello (ingranaggio in alto a sinistra) si scelgono formato video (H.264 o MJPEG), risoluzione, fluidità e qualità video (queste due solo per MJPEG), qualità audio e buffer audio, con valori predefiniti. In H.264 la risoluzione arriva al massimo a 720p. **Salva e applica** le memorizza nei **cookie del browser**: non esiste nessun file di configurazione sul server. Senza cookie si usano i default scritti nel codice (`SETTINGS` in `yt_mjpeg.py`). Anche le ricerche recenti stanno in un cookie.
 
 ## Cookie di YouTube (facoltativo)
 Se YouTube chiede di verificare che non sei un robot, esporta i cookie di youtube.com in formato Netscape e caricali dalla pagina `/cookies`. Vengono salvati in `~/cookies.txt` sul server.
@@ -94,3 +100,10 @@ Se YouTube chiede di verificare che non sei un robot, esporta i cookie di youtub
 
 ## Rilasci
 Si pubblicano con un tag `vX.Y`: GitHub Actions crea la release con `yt_mjpeg.py` allegato.
+
+## Pagine di prova
+- `/test`: quali funzioni offre il browser (WebCodecs, WebAssembly, WebGL, formati immagine).
+- `/wasmtest`: scarica qualche secondo del video aperto in H.264, misura quanti fps il browser riesce a decodificare e lo riproduce in tempo reale.
+
+## Decoder WebAssembly
+Il decoder H.264 è incorporato in `yt_mjpeg.py`. Il sorgente del wrapper è in `wasm/h264dec.c`; `wasm/build.sh` lo ricompila (servono solo clang/lld, cmake, ninja e git) e lo reincorpora nel file.
