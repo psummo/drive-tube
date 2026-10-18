@@ -16,7 +16,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "12.0"
+VERSION = "12.1"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -115,8 +115,9 @@ def recent_cookie_header(rows):
     return "yt_recent=%s; Max-Age=31536000; Path=/; SameSite=Lax" % quote(json.dumps(rows, ensure_ascii=False), safe="")
 
 
-FIFO_V = "/tmp/yt_vid.mjpg"
-FIFO_A = "/tmp/yt_aud.mp3"
+# un file di scambio per porta: piu' istanze (porte diverse) possono girare insieme
+FIFO_V = "/tmp/yt_vid_%d.fifo" % PORT
+FIFO_A = "/tmp/yt_aud_%d.fifo" % PORT
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -660,7 +661,7 @@ def ffmpeg_cmd(vsrc, asrc, pos):
     # niente tag ID3 ne' header Xing: lo stream audio si puo' riprendere a meta'
     aout = [
         "-map", amap, "-vn",
-        "-c:a", "libmp3lame", "-b:a", "%dk" % AUDIO_KBPS,
+        "-c:a", "libmp3lame", "-b:a", "%dk" % AUDIO_KBPS, "-ar", "48000",
         "-id3v2_version", "0", "-write_xing", "0",
         "-f", "mp3", FIFO_A,
     ]
@@ -864,6 +865,11 @@ HTML = """<!doctype html>
   #nexts a, #nexts a:visited, #nexts a:hover{color:#fff;text-decoration:none}
   #savecfg{width:100%;height:48px;margin-top:16px;border:0;border-radius:8px;background:#fff;color:#000;font-size:18px}
   #freeze{position:fixed;inset:0;width:100%;height:100%;display:none;z-index:2;background:#000}
+  #pp{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:11;display:none;
+    width:150px;height:150px;border-radius:50%;border:3px solid rgba(255,255,255,.85);
+    background:rgba(0,0,0,.55);color:#fff;font-size:64px;line-height:1;padding:0;
+  }
 </style>
 <img id="v" alt="">
 <canvas id="screen"></canvas>
@@ -875,6 +881,7 @@ HTML = """<!doctype html>
   <div id="ver" style="position:fixed;left:12px;bottom:12px;z-index:40;color:#aaa;font-size:13px">__VER__</div>
 <button id="go" type="button">&#9654;</button>
 </div>
+<button id="pp" type="button">&#10074;&#10074;</button>
 <div id="prog"><div id="track"><i id="fill"></i></div></div>
 <div id="time"></div>
 <button id="menu" type="button">&#9881;</button>
@@ -1116,7 +1123,7 @@ function sliceBuf(buf, skipSec){
 }
 function scheduleBuf(buf){
   if (!buf) return;
-  if (!audioArm || !actx) { if (audioHold.length < 30) { audioHold.push(buf); if (actx) audioNext = actx.currentTime + audioHold.reduce(function(s,b){ return s + b.duration; }, 0); } return; }
+  if (!audioArm || !actx) { if (audioHold.length < 120) { audioHold.push(buf); if (actx) audioNext = actx.currentTime + audioHold.reduce(function(s,b){ return s + b.duration; }, 0); } return; }
   var frameT = drawnT;
   if (audioCursor + 0.4 < frameT) {
     var late = frameT - audioCursor;
@@ -1131,8 +1138,18 @@ function scheduleBuf(buf){
   var src = actx.createBufferSource();
   src.buffer = buf;
   src.connect(actx.destination);
-  if (when < actx.currentTime + 0.02) when = actx.currentTime + 0.02;
-  try { src.start(when); audioSources.push(src); } catch (e) {}
+  // un blocco gia' in ritardo non si sposta avanti (si sovrapporrebbe al
+  // successivo): si salta la parte gia' passata, cosi' i blocchi restano attaccati
+  var skip = 0;
+  if (when < actx.currentTime + 0.02) { skip = actx.currentTime + 0.02 - when; when += skip; }
+  // finito di suonare, il blocco esce dalla lista: senza questo tutto l'audio
+  // decodificato restava in memoria fino al salto successivo (circa 1 GB in 45 minuti)
+  src.onended = function(){
+    var i = audioSources.indexOf(src);
+    if (i >= 0) audioSources.splice(i, 1);
+    src.disconnect();
+  };
+  try { src.start(when, Math.min(skip, Math.max(0, buf.duration - 0.001))); audioSources.push(src); } catch (e) {}
   audioCursor += buf.duration;
   audioNext = syncOrigin + audioCursor;
 }
@@ -1274,7 +1291,10 @@ function hold(){
   }
 }
 function ensureCtx(){
-  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!actx) {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    try { actx = new AC({sampleRate: 48000}); } catch (e) { actx = new AC(); }
+  }
   return actx.state === 'suspended' ? actx.resume() : Promise.resolve();
 }
 var audioHold = [];
@@ -1298,11 +1318,96 @@ function concatU8(a, b){
   c.set(a, 0); c.set(b, a.length);
   return c;
 }
-function syncAt(u8, from){
-  for (var i = from; i < u8.length - 1; i++)
-    if (u8[i] === 0xff && (u8[i + 1] & 0xe0) === 0xe0) return i;
+// --- MP3 a pezzi senza buchi ---
+// Divide lo stream nei suoi frame reali (lunghezza calcolata dall'intestazione,
+// niente falsi inizi dentro i dati) e decodifica blocchi di circa un secondo.
+// Ogni blocco porta con se' gli ultimi MP3_PRE frame del blocco precedente:
+// servono al decoder (serbatoio di bit e sovrapposizione tra frame) e il loro
+// suono viene scartato. L'ultimo frame di ogni blocco non si usa e diventa il
+// primo del blocco dopo, cosi' anche la fine del blocco e' pulita.
+var MP3_SR = [[44100, 48000, 32000], [22050, 24000, 16000], [11025, 12000, 8000]];
+var MP3_BR1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+var MP3_BR2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+var MP3_PRE = 4, MP3_BLOCK = 40;
+function mp3Frame(u8, i){
+  if (i + 4 > u8.length || u8[i] !== 0xFF || (u8[i + 1] & 0xE0) !== 0xE0) return null;
+  var ver = (u8[i + 1] >> 3) & 3, layer = (u8[i + 1] >> 1) & 3;
+  if (ver === 1 || layer !== 1) return null;
+  var bri = u8[i + 2] >> 4, sri = (u8[i + 2] >> 2) & 3, pad = (u8[i + 2] >> 1) & 1;
+  if (bri === 0 || bri === 15 || sri === 3) return null;
+  var v = ver === 3 ? 0 : (ver === 2 ? 1 : 2);
+  var sr = MP3_SR[v][sri], br = (v === 0 ? MP3_BR1 : MP3_BR2)[bri] * 1000;
+  return {len: Math.floor((v === 0 ? 144 : 72) * br / sr) + pad, sr: sr, spf: v === 0 ? 1152 : 576};
+}
+// primo frame valido da i in poi, confermato dal frame successivo
+function mp3Sync(u8, i){
+  for (; i + 4 <= u8.length; i++) {
+    var f = mp3Frame(u8, i);
+    if (!f) continue;
+    if (i + f.len + 4 > u8.length) return i;
+    if (mp3Frame(u8, i + f.len)) return i;
+  }
   return -1;
 }
+// stato: {pend: byte non ancora usati, pre: byte dei frame da riusare, npre}
+function mp3Chunker(){ return {pend: new Uint8Array(0), pre: new Uint8Array(0), npre: 0, synced: false, sr: 0, spf: 1152}; }
+// aggiunge byte; ritorna un blocco pronto da decodificare oppure null
+// blocco: {bytes, dropHead (s), dropTail (s)}
+function mp3Take(st, chunk, last){
+  if (chunk && chunk.length) st.pend = st.pend.length ? concatU8(st.pend, chunk) : chunk;
+  var u = st.pend, o = 0;
+  if (!st.synced) {
+    o = mp3Sync(u, 0);
+    if (o < 0) { if (u.length > 8192) st.pend = u.slice(-4); return null; }
+    st.synced = true;
+  }
+  var starts = [];
+  while (true) {
+    var f = mp3Frame(u, o);
+    if (!f) {
+      if (o + 4 > u.length) break;
+      var s = mp3Sync(u, o + 1);
+      if (s < 0) break;
+      o = s;
+      continue;
+    }
+    if (o + f.len > u.length) break;
+    st.sr = f.sr; st.spf = f.spf;
+    starts.push(o);
+    o += f.len;
+    if (!last && starts.length > MP3_BLOCK) break;
+  }
+  var n = starts.length;
+  if (!last && n <= MP3_BLOCK) {
+    if (starts.length) st.pend = u.subarray(starts[0]);
+    return null;
+  }
+  if (!n) return null;
+  // usati: tutti i frame tranne l'ultimo (salvo a fine stream)
+  var useEnd = last ? o : starts[n - 1];
+  var body = u.subarray(starts[0], o);
+  var bytes = st.pre.length ? concatU8(st.pre, body) : body.slice();
+  var fdur = st.spf / st.sr;
+  var blk = {bytes: bytes, dropHead: st.npre * fdur, dropTail: last ? 0 : fdur, sr: st.sr};
+  // prossimo prefisso: ultimi MP3_PRE frame usati
+  var usedStarts = last ? starts : starts.slice(0, n - 1);
+  var k = Math.min(MP3_PRE, usedStarts.length);
+  st.pre = u.slice(usedStarts[usedStarts.length - k], useEnd);
+  st.npre = k;
+  st.pend = last ? new Uint8Array(0) : u.subarray(useEnd);
+  return blk;
+}
+// taglia testa e coda del suono decodificato (in secondi)
+function mp3Trim(ctx, buf, head, tail){
+  var rate = buf.sampleRate;
+  var a = Math.round(head * rate), b = buf.length - Math.round(tail * rate);
+  if (b - a < 64) return null;
+  if (a === 0 && b === buf.length) return buf;
+  var out = ctx.createBuffer(buf.numberOfChannels, b - a, rate);
+  for (var c = 0; c < buf.numberOfChannels; c++) out.getChannelData(c).set(buf.getChannelData(c).subarray(a, b));
+  return out;
+}
+
 function playAudioStream(url){
   stopAudio();
   var ctrl = new AbortController();
@@ -1322,34 +1427,32 @@ function playAudioStream(url){
   }).then(function(res){
     if (!res.ok) { armVideo(); return; }
     var reader = res.body.getReader();
+    var st = mp3Chunker();
+    function decodeBlk(blk){
+      var b = blk.bytes;
+      return actx.decodeAudioData(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)).then(function(buf){
+        if (ctrl.signal.aborted || my !== gen) return;
+        var t = mp3Trim(actx, buf, blk.dropHead, blk.dropTail);
+        if (t) scheduleBuf(t);
+      }).catch(function(){});
+    }
+    // decodifica in ordine tutti i blocchi pronti
+    function drain(chunk, last){
+      var blk = mp3Take(st, chunk, last);
+      if (!blk) return Promise.resolve();
+      return decodeBlk(blk).then(function(){
+        if (last || ctrl.signal.aborted || my !== gen) return;
+        return drain(null, false);
+      });
+    }
     function read(){
       if (actx && audioNext - actx.currentTime > 8) {
         return new Promise(function(ok){ setTimeout(ok, 300); }).then(read);
       }
       return reader.read().then(function(r){
-        if (r.done && !ctrl.signal.aborted && my === gen && pending.length > 1000) {
-          var rest = pending.buffer.slice(pending.byteOffset, pending.byteOffset + pending.byteLength);
-          pending = new Uint8Array(0);
-          return actx.decodeAudioData(rest).then(function(buf){
-            if (!ctrl.signal.aborted && my === gen) scheduleBuf(buf);
-          }).catch(function(){});
-        }
-        if (r.done || ctrl.signal.aborted || my !== gen) return;
-        pending = concatU8(pending, r.value);
-        if (pending.length < 48000) return read();
-        var cut = syncAt(pending, 24000);
-        if (cut < 1) {
-          if (pending.length > 200000) pending = pending.slice(-16000);
-          return read();
-        }
-        var piece = pending.slice(0, cut);
-        pending = pending.slice(cut);
-        var copy = piece.buffer.slice(piece.byteOffset, piece.byteOffset + piece.byteLength);
-        return actx.decodeAudioData(copy).then(function(buf){
-          if (ctrl.signal.aborted || my !== gen) return;
-          scheduleBuf(buf);
-          return read();
-        }).catch(function(){ return read(); });
+        if (ctrl.signal.aborted || my !== gen) return;
+        if (r.done) return drain(null, true);
+        return drain(r.value, false).then(read);
       });
     }
     return read();
@@ -1393,6 +1496,31 @@ function showNext(on){
   document.getElementById('nexts').style.display = on ? 'flex' : 'none';
   if (on) loadNext();
 }
+// comandi sopra il video: suggerimenti, home e pulsante pausa/play al centro
+var chromeOn = false, ctlTimer = null;
+var ppBtn = document.getElementById('pp');
+function ctlGlyph(){ ppBtn.innerHTML = userPaused ? '&#9654;' : '&#10074;&#10074;'; }
+function showControls(autoHideMs){
+  chromeOn = true;
+  showNext(true);
+  document.getElementById('homebtn').style.display = 'block';
+  ctlGlyph();
+  ppBtn.style.display = 'block';
+  if (ctlTimer) { clearTimeout(ctlTimer); ctlTimer = null; }
+  if (!userPaused) ctlTimer = setTimeout(hideControls, autoHideMs || 5000);
+}
+function hideControls(){
+  if (ctlTimer) { clearTimeout(ctlTimer); ctlTimer = null; }
+  if (userPaused) return;
+  chromeOn = false;
+  showNext(false);
+  document.getElementById('homebtn').style.display = 'none';
+  ppBtn.style.display = 'none';
+}
+ppBtn.onclick = function(ev){
+  ev.stopPropagation();
+  togglePlay();
+};
 function togglePlay(){
   var now = Date.now();
   if (now - clickAt < 700) return;
@@ -1403,11 +1531,11 @@ function togglePlay(){
       userPaused = true;
       stopClock();
       if (actx && actx.state === 'running') actx.suspend();
-      showNext(true);
+      showControls();
       ui('pausa');
     } else {
       userPaused = false;
-      showNext(false);
+      showControls(2500);
       if (actx && actx.state === 'suspended') actx.resume();
       flushHeldAudio();
       startClock();
@@ -1419,9 +1547,9 @@ function togglePlay(){
     if (userPaused) {
       stopClock();
       if (actx && actx.state === 'running') actx.suspend();
-      showNext(true);
+      showControls();
     } else {
-      showNext(false);
+      showControls(2500);
       if (actx && actx.state === 'suspended') actx.resume();
       flushHeldAudio();
       startClock();
@@ -1826,19 +1954,13 @@ overlay.onclick = function(ev){
   if (ev.target === go) return;
   stageClick(ev);
 };
-var chromeOn = false;
 var cfgNow = __CFG__;
 var SETTINGS = __OPTS__;
 function stageClick(ev){
-  if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #nexts, #prog')) return;
+  if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #nexts, #prog, #pp')) return;
   if (go.style.display !== 'none') return;
-  if (!chromeOn) {
-    chromeOn = true;
-    showNext(true);
-    document.getElementById('homebtn').style.display = 'block';
-    return;
-  }
-  togglePlay();
+  if (userPaused) { showControls(); return; }
+  if (chromeOn) hideControls(); else showControls();
 }
 function saveCfgCookie(){
   var o = {};
