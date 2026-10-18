@@ -14,7 +14,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.25"
+VERSION = "11.26"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -2205,7 +2205,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 sec = max(3, min(60, int(float((q.get("sec") or ["20"])[0]))))
             except ValueError:
                 sec = 20
-            try:
+            def h264_urls():
                 p = subprocess.run(
                     yt_cmd("--no-playlist", "--user-agent", UA,
                            "-f", "bv*[vcodec^=avc1][height<=720]/bv*[vcodec^=avc1]",
@@ -2213,34 +2213,61 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                            "--print", "urls", url),
                     text=True, capture_output=True, timeout=90,
                 )
-            except Exception as e:
-                self.send_error(502, "yt-dlp: %s" % e)
-                return
-            lines = [x.strip() for x in p.stdout.splitlines() if x.strip()]
-            urls = [x for x in lines if x.startswith("http")]
-            info = next((x for x in lines if not x.startswith("http")), "?")
-            if not urls:
-                print("h264test: nessun formato H.264", (p.stderr or "")[-300:], flush=True)
-                self.send_error(502, "nessun formato H.264 per questo video")
+                lines = [x.strip() for x in p.stdout.splitlines() if x.strip()]
+                urls = [x for x in lines if x.startswith("http")]
+                info = next((x for x in lines if not x.startswith("http")), "?")
+                return urls, info, (p.stderr or "")[-300:]
+
+            def h264_start(u):
+                ff = subprocess.Popen(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                     "-user_agent", UA, "-headers", HEADERS, "-t", str(sec), "-i", u,
+                     "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                first = ff.stdout.read(65536)
+                if first:
+                    # stderr va svuotato in parallelo, se no ffmpeg puo' bloccarsi
+                    threading.Thread(target=ff.stderr.read, daemon=True).start()
+                    return ff, first, ""
+                ff.wait()
+                return None, b"", ff.stderr.read().decode("utf-8", "replace").strip()[-300:]
+
+            ff = first = None
+            err = ""
+            info = "?"
+            for attempt in (1, 2):
+                try:
+                    urls, info, yerr = h264_urls()
+                except Exception as e:
+                    urls, yerr = [], str(e)
+                if not urls:
+                    err = "yt-dlp: nessun formato H.264. " + yerr
+                    print("h264test tentativo %d:" % attempt, err, flush=True)
+                    continue
+                ff, first, ferr = h264_start(urls[0])
+                if ff:
+                    break
+                err = "ffmpeg: " + (ferr or "nessun dato")
+                print("h264test tentativo %d:" % attempt, err, flush=True)
+            if not ff:
+                body = err.encode("utf-8", "replace")
+                self.send_response(502)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body)
                 return
             print("h264test", info, "%ds" % sec, flush=True)
-            ff = subprocess.Popen(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-                 "-user_agent", UA, "-headers", HEADERS, "-t", str(sec), "-i", urls[0],
-                 "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            )
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Fmt", info.encode("ascii", "replace").decode())
             self.end_headers()
             try:
-                while True:
-                    chunk = ff.stdout.read(65536)
-                    if not chunk:
-                        break
+                chunk = first
+                while chunk:
                     self.wfile.write(chunk)
+                    chunk = ff.stdout.read(65536)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
             finally:
