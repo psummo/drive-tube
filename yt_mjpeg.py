@@ -15,7 +15,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.28"
+VERSION = "11.29"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1578,7 +1578,19 @@ canvas{display:none;width:100%;max-width:960px;background:#000;margin:8px 0}
 #clock{font-size:28px;color:#6cf}
 input,button{font-size:20px;background:#222;color:#fff;border:1px solid #555;padding:4px 8px}
 button{background:#2a5;border:0;padding:8px 18px}
+#bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;background:#1b1b1b;border:1px solid #333;padding:8px 10px;margin:0 0 10px}
+#bar a{color:#6cf;text-decoration:none}
+#bar .sp{flex:1}
+#updbtn{background:#345;padding:6px 14px}
+#updtxt{color:#aaa;font-size:17px}
 </style></head><body>
+<div id="bar">
+  <a href="/">&larr; App</a>
+  <a href="/test">Test browser</a>
+  <span class="sp"></span>
+  <span id="updtxt">Versione __VER__</span>
+  <button type="button" id="updbtn">Controlla aggiornamenti</button>
+</div>
 <h1>Test H.264 in WebAssembly</h1>
 <div id="clock"></div>
 <div>Video YouTube (id, vuoto = quello aperto nell'app) <input id="vid" size="13">
@@ -1808,6 +1820,42 @@ async function run(){
   play(data, srcFps, mode);
 }
 document.getElementById('go').onclick = function(){ run(); };
+
+// aggiornamenti: stessa logica del pannello dell'app
+(function(){
+  var btn = document.getElementById('updbtn'), txt = document.getElementById('updtxt');
+  btn.onclick = function(){
+    if (btn.getAttribute('data-mode') === 'install') {
+      btn.disabled = true;
+      txt.textContent = 'installo, il server si riavvia...';
+      fetch('/update/install').then(function(r){ return r.json(); }).then(function(j){
+        if (!j.ok) { txt.textContent = 'errore: ' + j.error; btn.disabled = false; return; }
+        txt.textContent = 'installata ' + j.version + ', ricarico...';
+        var tries = 0;
+        (function wait(){
+          setTimeout(function(){
+            fetch('/health').then(function(r){ if (r.ok) location.reload(); else throw 0; })
+              .catch(function(){ if (++tries < 40) wait(); else txt.textContent = 'riavvio lento, ricarica la pagina'; });
+          }, 1500);
+        })();
+      }).catch(function(){ txt.textContent = 'errore di rete'; btn.disabled = false; });
+      return;
+    }
+    btn.disabled = true;
+    txt.textContent = 'controllo...';
+    fetch('/update/check').then(function(r){ return r.json(); }).then(function(j){
+      btn.disabled = false;
+      if (j.error) { txt.textContent = j.error; return; }
+      if (j.newer) {
+        txt.textContent = 'Nuova versione ' + j.latest + ' (hai ' + j.current + ')';
+        btn.textContent = 'Installa';
+        btn.setAttribute('data-mode', 'install');
+      } else {
+        txt.textContent = 'Versione ' + j.current + ', aggiornata';
+      }
+    }).catch(function(){ btn.disabled = false; txt.textContent = 'errore di rete'; });
+  };
+})();
 </script></body></html>
 """
 
@@ -2175,7 +2223,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
 
         if path == "/wasmtest":
-            body = WASMTEST_HTML.encode("utf-8")
+            body = WASMTEST_HTML.replace("__VER__", VERSION).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
