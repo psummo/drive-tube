@@ -2,6 +2,7 @@
 import html
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 import select
 import socket
@@ -14,7 +15,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "11.26"
+VERSION = "11.27"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -2216,7 +2217,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 lines = [x.strip() for x in p.stdout.splitlines() if x.strip()]
                 urls = [x for x in lines if x.startswith("http")]
                 info = next((x for x in lines if not x.startswith("http")), "?")
-                return urls, info, (p.stderr or "")[-300:]
+                return urls, info, re.sub(r"https?://\S+", "<url>", p.stderr or "")[-300:]
 
             def h264_start(u):
                 ff = subprocess.Popen(
@@ -2231,7 +2232,11 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                     threading.Thread(target=ff.stderr.read, daemon=True).start()
                     return ff, first, ""
                 ff.wait()
-                return None, b"", ff.stderr.read().decode("utf-8", "replace").strip()[-300:]
+                txt = ff.stderr.read().decode("utf-8", "replace")
+                # gli indirizzi googlevideo sono lunghissimi e coprono il motivo dell'errore
+                txt = re.sub(r"https?://\S+", "<url>", txt)
+                txt = " | ".join(x.strip() for x in txt.splitlines() if x.strip())
+                return None, b"", txt[:400]
 
             ff = first = None
             err = ""
