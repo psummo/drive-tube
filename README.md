@@ -14,7 +14,7 @@ A Linux machine with:
 - `python3` and `git`
 - `ffmpeg` with `libmp3lame` (most builds include it)
 - `yt-dlp`
-- **Node.js 22 or later** (or Deno): yt-dlp needs a JavaScript runtime for YouTube, and the PO token provider (see below) needs Node 22+
+- **Node.js 22 or later** (or Deno): yt-dlp needs a JavaScript runtime for YouTube, and the PO token provider (see below) needs Node 22+. If it's missing, the admin page can download it for you (no sudo needed)
 
 ## Installation
 Install the dependencies with your distribution's package manager:
@@ -28,7 +28,7 @@ sudo dnf install -y python3 git ffmpeg curl
 ```
 If your distribution doesn't ship `ffmpeg`, download a static Linux build and copy the binary to `/usr/local/bin`.
 
-The `nodejs` package on Debian/Ubuntu is often too old: install Node 22+ from [NodeSource](https://github.com/nodesource/distributions). If only Node is installed (no Deno), drive-tube enables it for yt-dlp automatically (`--js-runtimes node`).
+The `nodejs` package on Debian/Ubuntu is often too old. You don't have to install Node yourself: the PO token button in the admin page (see below) downloads the latest official LTS build into `~/.local/share/drive-tube/node` when it can't find Node 22+. drive-tube also finds a Node installed with nvm, fnm, volta, asdf or in `/usr/local`, even though the systemd service doesn't load your shell's `PATH`, and uses the newest one. If only Node is available (no Deno), drive-tube enables it for yt-dlp automatically (`--js-runtimes node:PATH`).
 
 Install `yt-dlp` (standalone binary, no extra Python packages needed):
 ```bash
@@ -110,7 +110,7 @@ Export your youtube.com cookies in Netscape format and upload them from the admi
 ### PO token, no account needed
 The [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin generates the "PO tokens" YouTube checks in real browsers. It has two parts: a yt-dlp plugin and a small local server (port 4416, bound to `127.0.0.1`) that needs **Node.js 22+**.
 
-In the admin page, *PO token* section, **Installa / aggiorna plugin e server** (install / update plugin and server) does everything: it downloads the plugin to `~/.config/yt-dlp/plugins/`, clones the latest server release into `~/bgutil-ytdlp-pot-provider`, runs `npm ci` and `tsc` (a few minutes) and starts it. Progress is shown on the page. From then on drive-tube starts the server at every launch and restarts it if it stops. Press the same button again to update. **Solo il plugin** (plugin only) updates just the plugin.
+In the admin page, *PO token* section, **Installa / aggiorna plugin e server** (install / update plugin and server) does everything: it finds Node 22+ (or downloads it, see above), downloads the plugin to `~/.config/yt-dlp/plugins/`, clones the latest server release into `~/bgutil-ytdlp-pot-provider`, runs `npm ci` and `tsc` (a few minutes) and starts it. Progress is shown on the page. From then on drive-tube starts the server at every launch and restarts it if it stops. Press the same button again to update. **Solo il plugin** (plugin only) updates just the plugin.
 
 To do it by hand instead:
 ```bash

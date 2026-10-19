@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.4"
+VERSION = "13.5"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -147,6 +147,134 @@ def tool_version(cmd):
         return ""
 
 
+# ---- Node.js ----
+# Il servizio systemd non legge ~/.bashrc: un Node installato con nvm, fnm, volta
+# o in /usr/local non e' nel suo PATH. Lo cerchiamo nei posti soliti e usiamo il
+# piu' recente; se manca (o e' troppo vecchio) drive-tube ne scarica uno ufficiale
+# in ~/.local/share/drive-tube/node, senza sudo.
+NODE_LOCAL = os.path.expanduser("~/.local/share/drive-tube/node")
+NODE_MIN = 22
+NODE_DIST = "https://nodejs.org/dist/"
+_node_cache = {"t": 0.0, "path": "", "major": 0}
+
+
+def _node_candidates():
+    import glob
+    h = os.path.expanduser("~")
+    pats = [
+        os.path.join(NODE_LOCAL, "bin", "node"),
+        h + "/.nvm/versions/node/*/bin/node",
+        h + "/.local/share/fnm/node-versions/*/installation/bin/node",
+        h + "/.fnm/node-versions/*/installation/bin/node",
+        h + "/.volta/bin/node",
+        h + "/.volta/tools/image/node/*/bin/node",
+        h + "/n/bin/node",
+        h + "/.local/bin/node",
+        h + "/.asdf/installs/nodejs/*/bin/node",
+        "/usr/local/bin/node", "/usr/bin/node", "/opt/*/bin/node", "/snap/bin/node",
+    ]
+    out = []
+    w = shutil.which("node")
+    if w:
+        out.append(w)
+    for p in pats:
+        out += sorted(glob.glob(p))
+    seen, res = set(), []
+    for p in out:
+        r = os.path.realpath(p)
+        if r not in seen and os.path.isfile(r) and os.access(r, os.X_OK):
+            seen.add(r)
+            res.append(p)
+    return res
+
+
+def find_node(refresh=False):
+    """(percorso, versione principale) del Node piu' recente trovato, o ("", 0)."""
+    if not refresh and time.time() - _node_cache["t"] < 120:
+        return _node_cache["path"], _node_cache["major"]
+    best, bmaj = "", 0
+    for p in _node_candidates():
+        m = re.search(r"v(\d+)", tool_version([p, "--version"]) or "")
+        maj = int(m.group(1)) if m else 0
+        if maj > bmaj:
+            best, bmaj = p, maj
+    _node_cache.update(t=time.time(), path=best, major=bmaj)
+    return best, bmaj
+
+
+def node_env(node):
+    # PATH con la cartella di node davanti: npm e npx sono script "env node"
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(node) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def node_install(log=lambda m: None):
+    """Scarica l'ultimo Node LTS ufficiale in NODE_LOCAL. Ritorna il percorso di node."""
+    import platform
+    import tarfile
+    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(
+        platform.machine().lower())
+    if not arch or not sys.platform.startswith("linux"):
+        raise RuntimeError("non so scaricare Node per %s %s: installalo a mano" % (sys.platform, platform.machine()))
+    ua = {"User-Agent": "drive-tube"}
+    with urllib.request.urlopen(urllib.request.Request(NODE_DIST + "index.json", headers=ua), timeout=60) as r:
+        rel = json.load(r)
+    pick = next((x for x in rel if x.get("lts") and "linux-" + arch in x.get("files", [])), None)
+    if not pick:
+        raise RuntimeError("nessuna versione LTS di Node trovata per linux-%s" % arch)
+    ver = pick["version"]
+    name = "node-%s-linux-%s.tar.xz" % (ver, arch)
+    base = NODE_DIST + ver + "/"
+    log("scarico Node.js %s (senza sudo, in %s)" % (ver, NODE_LOCAL))
+    with urllib.request.urlopen(urllib.request.Request(base + "SHASUMS256.txt", headers=ua), timeout=60) as r:
+        sums = r.read().decode()
+    m = re.search(r"^([0-9a-f]{64})\s+" + re.escape(name) + r"$", sums, re.M)
+    if not m:
+        raise RuntimeError("checksum di %s non trovato" % name)
+    parent = os.path.dirname(NODE_LOCAL)
+    os.makedirs(parent, exist_ok=True)
+    tmp = os.path.join(parent, name + ".part")
+    h = hashlib.sha256()
+    with urllib.request.urlopen(urllib.request.Request(base + name, headers=ua), timeout=600) as r, open(tmp, "wb") as f:
+        while True:
+            b = r.read(1 << 20)
+            if not b:
+                break
+            h.update(b)
+            f.write(b)
+    if h.hexdigest() != m.group(1):
+        os.remove(tmp)
+        raise RuntimeError("Node scaricato non valido (checksum diverso)")
+    log("estraggo Node.js %s" % ver)
+    work = NODE_LOCAL + ".new"
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    with tarfile.open(tmp) as t:
+        root = os.path.realpath(work)
+        for mem in t.getmembers():
+            dest = os.path.realpath(os.path.join(work, mem.name))
+            if not (dest == root or dest.startswith(root + os.sep)):
+                raise RuntimeError("archivio di Node non valido")
+        try:
+            t.extractall(work, filter="fully_trusted")
+        except TypeError:
+            t.extractall(work)
+    os.remove(tmp)
+    inner = os.path.join(work, name[:-len(".tar.xz")])
+    old = NODE_LOCAL + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(NODE_LOCAL):
+        os.rename(NODE_LOCAL, old)
+    os.rename(inner, NODE_LOCAL)
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(old, ignore_errors=True)
+    node, maj = find_node(refresh=True)
+    if maj < NODE_MIN:
+        raise RuntimeError("Node installato ma non funziona")
+    return node
+
+
 def ytdlp_status(force=False):
     inst = tool_version([ytdlp_bin(), "--version"])
     if force or time.time() - _ytdlp_latest["t"] > 600:
@@ -159,11 +287,12 @@ def ytdlp_status(force=False):
             _ytdlp_latest.update(t=time.time(), err="controllo fallito: %s" % e)
     latest = _ytdlp_latest["v"]
     js = ""
-    for name in ("deno", "node"):
-        path = shutil.which(name)
-        if path:
-            js = "%s %s" % (name, tool_version([path, "--version"]))
-            break
+    deno = shutil.which("deno")
+    node, _ = find_node()
+    if deno:
+        js = "deno %s" % tool_version([deno, "--version"])
+    elif node:
+        js = "node %s (%s)" % (tool_version([node, "--version"]), node)
     ff = tool_version(["ffmpeg", "-version"])
     return {
         "installed": inst or "non trovato", "latest": latest, "error": _ytdlp_latest["err"],
@@ -244,7 +373,7 @@ def pot_start(force=False):
     # avvia il server bgutil se e' compilato e non risponde gia'
     p = _pot["proc"]
     alive = bool(p and p.poll() is None)
-    node = shutil.which("node")
+    node, _ = find_node()
     if alive or (_pot["install"].get("running") and not force) or not os.path.isfile(POT_MAIN) or not node:
         return False
     if not force and time.time() - _pot["last_start"] <= 60:
@@ -255,7 +384,7 @@ def pot_start(force=False):
     _bprint("avvio il server PO token (bgutil)", flush=True)
     _pot["proc"] = subprocess.Popen(
         [node, "build/main.js"], cwd=os.path.dirname(os.path.dirname(POT_MAIN)),
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env=node_env(node), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     threading.Thread(target=pot_server_log, args=(_pot["proc"],), daemon=True).start()
     return True
@@ -284,14 +413,6 @@ def pot_latest_tag():
     return POT_FALLBACK_TAG
 
 
-def node_major():
-    node = shutil.which("node")
-    if not node:
-        return 0
-    m = re.search(r"v?(\d+)", tool_version([node, "--version"]) or "")
-    return int(m.group(1)) if m else 0
-
-
 def pot_install_server():
     """Scarica, compila e avvia il server bgutil (gira in un thread)."""
     st = _pot["install"]
@@ -301,23 +422,32 @@ def pot_install_server():
         st["log"].append(msg)
         _bprint("PO token:", msg, flush=True)
 
+    env = None
+
     def run(cmd, cwd=None, timeout=900):
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
         tail = [l for l in ((p.stdout or "") + (p.stderr or "")).splitlines() if l.strip()][-12:]
         if p.returncode != 0:
             st["log"].extend(tail)
             raise RuntimeError("%s non riuscito (codice %d)" % (" ".join(cmd[:2]), p.returncode))
 
     try:
-        if node_major() < 22:
-            have = node_major()
-            raise RuntimeError(
-                ("serve Node.js 22 o piu' recente (installato: %d)" % have if have else
-                 "serve Node.js 22 o piu' recente, non e' installato")
-                + ": installalo da https://github.com/nodesource/distributions e riprova")
-        for tool in ("git", "npm", "npx"):
-            if not shutil.which(tool):
-                raise RuntimeError("manca il comando %s" % tool)
+        node, maj = find_node(refresh=True)
+        if maj >= NODE_MIN:
+            step("uso Node.js v%d: %s" % (maj, node))
+        else:
+            step("Node.js %s: ne scarico uno recente" % ("v%d e' troppo vecchio" % maj if maj else "non trovato"))
+            node = node_install(step)
+        nbin = os.path.dirname(node)
+        npm, npx = os.path.join(nbin, "npm"), os.path.join(nbin, "npx")
+        if not (os.path.isfile(npm) and os.path.isfile(npx)):
+            step("accanto a %s non ci sono npm e npx: ne scarico uno completo" % node)
+            node = node_install(step)
+            nbin = os.path.dirname(node)
+            npm, npx = os.path.join(nbin, "npm"), os.path.join(nbin, "npx")
+        env = node_env(node)
+        if not shutil.which("git"):
+            raise RuntimeError("manca il comando git")
         step("installo il plugin di yt-dlp")
         pot_install_plugin()
         tag = pot_latest_tag()
@@ -332,9 +462,9 @@ def pot_install_server():
             run(["git", "clone", "--depth", "1", "--branch", tag, POT_REPO, POT_HOME], timeout=300)
         srv = os.path.join(POT_HOME, "server")
         step("installo le dipendenze (npm ci, qualche minuto)")
-        run(["npm", "ci", "--no-audit", "--no-fund"], cwd=srv)
+        run([npm, "ci", "--no-audit", "--no-fund"], cwd=srv)
         step("compilo (tsc)")
-        run(["npx", "tsc"], cwd=srv)
+        run([npx, "tsc"], cwd=srv)
         if not os.path.isfile(POT_MAIN):
             raise RuntimeError("compilazione finita ma manca %s" % POT_MAIN)
         p = _pot["proc"]
@@ -375,7 +505,7 @@ def pot_install_begin():
 def pot_status():
     ping = pot_ping()
     p = _pot["proc"]
-    node = shutil.which("node")
+    node, _ = find_node()
     return {
         "plugin": pot_plugin_files(),
         "server": ping is not None,
@@ -465,8 +595,10 @@ def yt_cmd(*args):
         cmd += ["--cookies", COOKIES]
     # yt-dlp attiva da solo solo Deno: se c'e' soltanto Node va abilitato,
     # altrimenti alcune richieste a YouTube falliscono
-    if not shutil.which("deno") and shutil.which("node"):
-        cmd += ["--js-runtimes", "node"]
+    if not shutil.which("deno"):
+        node, _ = find_node()
+        if node:
+            cmd += ["--js-runtimes", "node:" + node]
     cmd += list(args)
     return cmd
 
