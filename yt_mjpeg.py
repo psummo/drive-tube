@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.6"
+VERSION = "13.7"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -572,6 +572,37 @@ def yt_diagnose():
                     "ok": r["ok"], "token": r["token"], "error": r.get("error", "")})
         _bprint("diagnosi YouTube:", yt_net_label(n), "->", "OK" if r["ok"] else (r.get("error") or "errore"), flush=True)
     return out
+
+
+# Cookie che identificano l'account Google: senza questi resta solo il "visitatore"
+COOKIE_ACCOUNT = re.compile(r"SID|LOGIN_INFO")
+
+
+def cookies_youtube_only(text, anon=False):
+    """Tiene solo i cookie di youtube.com (un export del browser contiene anche
+    banca, posta, ecc.), uno per nome (il piu' recente). Con anon=True toglie
+    anche quelli dell'account. Ritorna (testo, tenuti, scartati)."""
+    best, dropped = {}, 0
+    for line in text.splitlines():
+        if not line.strip() or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+            continue
+        p = line.split("\t")
+        if len(p) != 7:
+            dropped += 1
+            continue
+        dom = p[0][len("#HttpOnly_"):] if p[0].startswith("#HttpOnly_") else p[0]
+        if not (dom == "youtube.com" or dom.endswith(".youtube.com")) or (anon and COOKIE_ACCOUNT.search(p[5])):
+            dropped += 1
+            continue
+        key = (dom.lstrip("."), p[2], p[5])
+        exp = int(p[4]) if p[4].isdigit() else 0
+        if key in best:
+            dropped += 1
+            if exp <= best[key][0]:
+                continue
+        best[key] = (exp, line)
+    out = "# Netscape HTTP Cookie File\n" + "".join(v[1] + "\n" for v in best.values())
+    return out, len(best), dropped
 
 
 def cookie_mode():
@@ -3265,6 +3296,7 @@ small{color:#999}
 <form class="row" method="post" action="/admin/cookies" enctype="multipart/form-data">
   <input type="file" name="f" accept=".txt,text/plain" required>
   <button type="submit">Carica cookie (Netscape)</button>
+  <button type="submit" formaction="/admin/cookies?anon=1">Carica senza account (solo visitatore)</button>
   <button type="button" class="warn" id="ckdel">Cancella i cookie</button>
 </form>
 
@@ -4338,7 +4370,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         path = urlparse(self.path).path
         hdr = self.headers.get("Cookie")
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 2000000:
+        if n > (20000000 if path == "/admin/cookies" else 2000000):
             self.send_error(413)
             return
         raw = self.rfile.read(n)
@@ -4350,7 +4382,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             if not ADMIN_PASS or not is_admin(hdr):
                 self.send_error(403)
                 return
-            self.post_cookies(raw)
+            self.post_cookies(raw, anon=parse_qs(urlparse(self.path).query).get("anon") == ["1"])
         elif path.startswith("/admin/api/"):
             if not ADMIN_PASS or not is_admin(hdr):
                 self.json_out({"ok": False, "error": "accesso admin scaduto, ricarica la pagina"}, 403)
@@ -4551,7 +4583,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             return
         self.json_out({"ok": False, "error": "azione sconosciuta"}, 404)
 
-    def post_cookies(self, raw):
+    def post_cookies(self, raw, anon=False):
         text = raw.decode("utf-8", "replace")
         if "filename=" in text:
             parts = text.split("\r\n\r\n", 1)
@@ -4563,10 +4595,18 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.end_headers()
             self.wfile.write("file non valido: servono i cookie di youtube.com in formato Netscape".encode("utf-8"))
             return
+        text, kept, dropped = cookies_youtube_only(text, anon)
+        if not kept:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("nel file non ci sono cookie di youtube.com".encode("utf-8"))
+            return
         fd = os.open(COOKIES, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            f.write(text if text.endswith("\n") else text + "\n")
+            f.write(text)
         feed_cache.clear()
+        _bprint("admin: cookie tenuti %d (youtube.com%s), scartati %d" % (kept, ", senza account" if anon else "", dropped), flush=True)
         with SESSIONS_LOCK:
             for x in SESSIONS.values():
                 x.state["err"] = ""
