@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.3"
+VERSION = "13.4"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -204,7 +204,9 @@ POT_ZIP = os.path.join(POT_PLUGIN_DIR, "bgutil-ytdlp-pot-provider.zip")
 POT_ZIP_URL = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip"
 POT_PING = "http://127.0.0.1:4416/ping"
 POT_TEST_VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-_pot = {"proc": None, "last_start": 0.0}
+POT_REPO = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git"
+POT_FALLBACK_TAG = "2.0.2"
+_pot = {"proc": None, "last_start": 0.0, "install": {}}
 
 
 def pot_ping():
@@ -238,25 +240,136 @@ def pot_server_log(proc):
         pass
 
 
+def pot_start(force=False):
+    # avvia il server bgutil se e' compilato e non risponde gia'
+    p = _pot["proc"]
+    alive = bool(p and p.poll() is None)
+    node = shutil.which("node")
+    if alive or (_pot["install"].get("running") and not force) or not os.path.isfile(POT_MAIN) or not node:
+        return False
+    if not force and time.time() - _pot["last_start"] <= 60:
+        return False
+    if pot_ping() is not None:
+        return False
+    _pot["last_start"] = time.time()
+    _bprint("avvio il server PO token (bgutil)", flush=True)
+    _pot["proc"] = subprocess.Popen(
+        [node, "build/main.js"], cwd=os.path.dirname(os.path.dirname(POT_MAIN)),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    threading.Thread(target=pot_server_log, args=(_pot["proc"],), daemon=True).start()
+    return True
+
+
 def pot_supervisor():
-    # avvia (e riavvia) il server bgutil se e' compilato e non risponde gia'
+    # tiene acceso il server bgutil (lo riavvia se si ferma)
     while True:
         try:
-            p = _pot["proc"]
-            alive = bool(p and p.poll() is None)
-            node = shutil.which("node")
-            if (not alive and os.path.isfile(POT_MAIN) and node and pot_ping() is None
-                    and time.time() - _pot["last_start"] > 60):
-                _pot["last_start"] = time.time()
-                _bprint("avvio il server PO token (bgutil)", flush=True)
-                _pot["proc"] = subprocess.Popen(
-                    [node, "build/main.js"], cwd=os.path.dirname(os.path.dirname(POT_MAIN)),
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                )
-                threading.Thread(target=pot_server_log, args=(_pot["proc"],), daemon=True).start()
+            pot_start()
         except Exception as e:
             _bprint("server PO token:", e, flush=True)
         time.sleep(20)
+
+
+def pot_latest_tag():
+    # ultima versione X.Y.Z del server, letta dai tag del repository
+    try:
+        out = subprocess.run(["git", "ls-remote", "--tags", POT_REPO], capture_output=True,
+                             text=True, timeout=60).stdout
+        tags = re.findall(r"refs/tags/(\d+)\.(\d+)\.(\d+)$", out, re.M)
+        if tags:
+            return ".".join(max(tags, key=lambda t: tuple(int(x) for x in t)))
+    except Exception:
+        pass
+    return POT_FALLBACK_TAG
+
+
+def node_major():
+    node = shutil.which("node")
+    if not node:
+        return 0
+    m = re.search(r"v?(\d+)", tool_version([node, "--version"]) or "")
+    return int(m.group(1)) if m else 0
+
+
+def pot_install_server():
+    """Scarica, compila e avvia il server bgutil (gira in un thread)."""
+    st = _pot["install"]
+
+    def step(msg):
+        st["step"] = msg
+        st["log"].append(msg)
+        _bprint("PO token:", msg, flush=True)
+
+    def run(cmd, cwd=None, timeout=900):
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        tail = [l for l in ((p.stdout or "") + (p.stderr or "")).splitlines() if l.strip()][-12:]
+        if p.returncode != 0:
+            st["log"].extend(tail)
+            raise RuntimeError("%s non riuscito (codice %d)" % (" ".join(cmd[:2]), p.returncode))
+
+    try:
+        if node_major() < 22:
+            have = node_major()
+            raise RuntimeError(
+                ("serve Node.js 22 o piu' recente (installato: %d)" % have if have else
+                 "serve Node.js 22 o piu' recente, non e' installato")
+                + ": installalo da https://github.com/nodesource/distributions e riprova")
+        for tool in ("git", "npm", "npx"):
+            if not shutil.which(tool):
+                raise RuntimeError("manca il comando %s" % tool)
+        step("installo il plugin di yt-dlp")
+        pot_install_plugin()
+        tag = pot_latest_tag()
+        if os.path.isdir(os.path.join(POT_HOME, ".git")):
+            step("aggiorno il server alla versione %s" % tag)
+            run(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=POT_HOME, timeout=300)
+            run(["git", "checkout", "-f", tag], cwd=POT_HOME)
+        else:
+            if os.path.exists(POT_HOME):
+                raise RuntimeError("%s esiste ma non e' una copia git: spostala o cancellala" % POT_HOME)
+            step("scarico il server, versione %s" % tag)
+            run(["git", "clone", "--depth", "1", "--branch", tag, POT_REPO, POT_HOME], timeout=300)
+        srv = os.path.join(POT_HOME, "server")
+        step("installo le dipendenze (npm ci, qualche minuto)")
+        run(["npm", "ci", "--no-audit", "--no-fund"], cwd=srv)
+        step("compilo (tsc)")
+        run(["npx", "tsc"], cwd=srv)
+        if not os.path.isfile(POT_MAIN):
+            raise RuntimeError("compilazione finita ma manca %s" % POT_MAIN)
+        p = _pot["proc"]
+        if p and p.poll() is None:
+            step("fermo il server vecchio")
+            p.terminate()
+            try:
+                p.wait(10)
+            except Exception:
+                p.kill()
+        step("avvio il server")
+        pot_start(force=True)
+        for _ in range(30):
+            if pot_ping() is not None:
+                break
+            time.sleep(1)
+        if pot_ping() is None:
+            raise RuntimeError("il server compilato non risponde sulla porta 4416: guarda il log")
+        step("fatto: server %s attivo" % tag)
+        st["ok"] = True
+    except Exception as e:
+        st["error"] = str(e)
+        st["log"].append("ERRORE: %s" % e)
+        _bprint("PO token: installazione fallita:", e, flush=True)
+    finally:
+        st["running"] = False
+
+
+def pot_install_begin():
+    st = _pot["install"]
+    if st.get("running"):
+        return False
+    _pot["install"] = {"running": True, "step": "inizio", "log": [], "error": "", "ok": False}
+    threading.Thread(target=pot_install_server, daemon=True).start()
+    return True
 
 
 def pot_status():
@@ -270,6 +383,7 @@ def pot_status():
         "managed": bool(p and p.poll() is None),
         "built": os.path.isfile(POT_MAIN),
         "node": tool_version([node, "--version"]) if node else "",
+        "install": _pot["install"],
     }
 
 
@@ -2971,11 +3085,12 @@ small{color:#999}
 </form>
 
 <h2>PO token (verifica anti-bot di YouTube)</h2>
-<small>Senza cookie, i token del plugin bgutil fanno passare le richieste a YouTube. Servono il plugin e il suo server locale (vedi README).</small>
+<small>Senza cookie, i token del plugin bgutil fanno passare le richieste a YouTube. Servono il plugin e il suo server locale (Node.js 22+): il primo pulsante installa e avvia tutti e due.</small>
 <div class="row"><span id="potplug" class="na">plugin: controllo...</span></div>
 <div class="row"><span id="potsrv" class="na">server: controllo...</span></div>
 <div class="row">
-  <button id="potinst">Installa / aggiorna il plugin</button>
+  <button class="go" id="potsrvbtn">Installa / aggiorna plugin e server</button>
+  <button id="potinst">Solo il plugin</button>
   <button id="pottest">Prova con un video</button>
 </div>
 <div id="potout" style="white-space:pre-wrap;font:12px/1.4 monospace;background:#0b0b0b;border:1px solid #333;padding:8px;display:none"></div>
@@ -3124,10 +3239,26 @@ function loadPot(){
     $('potplug').className = j.plugin.length ? 'ok' : 'ko';
     var t = j.server ? 'server attivo' + (j.server_version ? ' (versione ' + j.server_version + ')' : '') + (j.managed ? ', avviato da drive-tube' : '')
       : (j.built ? 'server compilato ma non risponde' + (j.node ? '' : ': manca node') : 'server non installato in ~/bgutil-ytdlp-pot-provider');
-    $('potsrv').textContent = t + (j.node ? ' · node ' + j.node : '');
+    $('potsrv').textContent = t + (j.node ? ' · node ' + j.node : ' · node non installato');
     $('potsrv').className = j.server ? 'ok' : 'ko';
+    var ins = j.install || {}, out = $('potout'), b = $('potsrvbtn');
+    b.disabled = !!ins.running;
+    if (ins.log && ins.log.length) {
+      out.style.display = 'block';
+      out.style.color = ins.error ? '#f88' : (ins.ok ? '#8f8' : '#ccc');
+      out.textContent = (ins.running ? 'installazione in corso: ' + ins.step + '...' + String.fromCharCode(10, 10) : '') + ins.log.join(String.fromCharCode(10));
+    }
+    clearTimeout(loadPot.t);
+    if (ins.running) loadPot.t = setTimeout(loadPot, 2000);
   });
 }
+$('potsrvbtn').onclick = function(){
+  $('potsrvbtn').disabled = true;
+  api('pot/server', {}).then(function(j){
+    if (!j.ok) { say(j.error, true); $('potsrvbtn').disabled = false; return; }
+    say(''); loadPot();
+  });
+};
 $('potinst').onclick = function(){
   var b = $('potinst'); b.disabled = true; say('scarico il plugin...');
   api('pot/plugin', {}).then(function(j){
@@ -4142,6 +4273,13 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 return
             _bprint("plugin PO token installato in", where, flush=True)
             self.json_out({"ok": True, "path": where})
+            return
+        if what == "pot/server":
+            if not pot_install_begin():
+                self.json_out({"ok": False, "error": "installazione gia' in corso"}, 409)
+                return
+            _bprint("admin: installo il server PO token", flush=True)
+            self.json_out({"ok": True})
             return
         if what == "pot/test":
             self.json_out(pot_test())

@@ -108,15 +108,16 @@ From cloud server IPs, YouTube often asks for an anti-bot check. There are two w
 Export your youtube.com cookies in Netscape format and upload them from the admin page (*Cookie YouTube* section). They are saved to `~/cookies.txt`, readable only by your user. **Usa i cookie per** (use cookies for) chooses who uses them: *nessuno* (nobody), *solo admin* (admin only) or *tutti* (everyone). Whoever uses them acts with your account, and their home page also shows your subscriptions, "Watch later" and liked videos. If the file exists and you never made a choice, everyone uses it, as in older versions. Without cookies the home page shows only searches.
 
 ### PO token, no account needed
-The [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin generates the "PO tokens" YouTube checks in real browsers. It has two parts:
+The [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin generates the "PO tokens" YouTube checks in real browsers. It has two parts: a yt-dlp plugin and a small local server (port 4416, bound to `127.0.0.1`) that needs **Node.js 22+**.
 
-1. **A local server** (port 4416, bound to `127.0.0.1`). With Node 22+, once:
-   ```bash
-   git clone --single-branch --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
-   cd ~/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc
-   ```
-   drive-tube finds `~/bgutil-ytdlp-pot-provider/server/build/main.js`, starts the server and restarts it if it stops. Alternatively use Docker: `docker run --name bgutil-provider -d --init --restart unless-stopped -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider` (drive-tube uses it if it answers). Check the releases page for a version newer than 2.0.2.
-2. **The yt-dlp plugin**: in the admin page, *PO token* section, **Installa / aggiorna il plugin** (install / update) downloads it to `~/.config/yt-dlp/plugins/`.
+In the admin page, *PO token* section, **Installa / aggiorna plugin e server** (install / update plugin and server) does everything: it downloads the plugin to `~/.config/yt-dlp/plugins/`, clones the latest server release into `~/bgutil-ytdlp-pot-provider`, runs `npm ci` and `tsc` (a few minutes) and starts it. Progress is shown on the page. From then on drive-tube starts the server at every launch and restarts it if it stops. Press the same button again to update. **Solo il plugin** (plugin only) updates just the plugin.
+
+To do it by hand instead:
+```bash
+git clone --single-branch --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
+cd ~/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc
+```
+Or with Docker: `docker run --name bgutil-provider -d --init --restart unless-stopped -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider` (drive-tube uses any server that answers on port 4416).
 
 Then **Prova con un video** (test with a video) asks YouTube for a short video and shows whether the request passes and whether a token was generated. If YouTube still refuses, the server IP may be blocked: a PO token does not get around IP blocks.
 
