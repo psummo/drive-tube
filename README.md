@@ -87,6 +87,8 @@ Environment=YT_ADMIN=a-long-admin-password
 ```
 then `sudo systemctl restart drive-tube`.
 
+Special characters in the password: in the shell, use single quotes (`YT_ADMIN='my!pass?'`), because bash interprets `!` even inside double quotes (`event not found`). In the systemd file `!` and `?` are fine as they are, but `%` must be written as `%%`, and a password with spaces needs double quotes around the whole assignment: `Environment="YT_ADMIN=my pass!"`.
+
 The `ExecStartPre` line pulls the latest version every time the service starts. The log goes to `~/yt.log` and can also be read from the admin page. To stop or restart: `sudo systemctl stop|restart drive-tube`.
 
 ## Access, sessions and the admin page
