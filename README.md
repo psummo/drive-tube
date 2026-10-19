@@ -103,7 +103,7 @@ Environment=YT_ADMIN=una-password-lunga
 poi `sudo systemctl restart drive-tube`. Apri `/admin`, entra con la password e crea un codice per te e uno per ogni amico. Senza `YT_ADMIN` la pagina admin resta spenta.
 
 - Ogni codice ha la sua sessione (video, impostazioni e ffmpeg separati) e si usa da **un solo schermo alla volta**: se lo apri su un altro schermo, il primo si ferma e mostra "Guarda qui" per riprenderlo. Per due schermi con video diversi servono due codici. Al massimo 10 sessioni in tutto.
-- Dalla pagina admin vedi le sessioni attive e puoi chiuderle, controlli e installi gli aggiornamenti, riavvii il server, gestisci il PO token e leggi il log. Nel player non ci sono più aggiornamenti né log.
+- Dalla pagina admin vedi le sessioni attive e puoi chiuderle, controlli e installi gli aggiornamenti, riavvii il server, gestisci cookie e PO token e leggi il log. Nel player non ci sono più aggiornamenti né log.
 - **yt-dlp** si aggiorna dalla pagina admin (sezione *Server*): mostra la versione in uso e l'ultima uscita, e il pulsante scarica la versione stabile in `~/.local/bin/yt-dlp`, che da quel momento ha la precedenza su quella di sistema. Nella stessa riga trovi le versioni di ffmpeg e del runtime JavaScript (node o deno).
 - Disattivare o eliminare un codice chiude subito le sessioni di chi lo usava.
 - Dopo 8 tentativi sbagliati dallo stesso indirizzo in 10 minuti l'accesso si blocca per qualche minuto.
@@ -114,8 +114,14 @@ In http codici e password viaggiano in chiaro. Se condividi il server con altri,
 ## Impostazioni
 Dal pannello (ingranaggio in alto a sinistra) si scelgono formato video (H.264 o MJPEG), risoluzione, fluidità e qualità video (queste due solo per MJPEG), qualità audio e buffer audio, con valori predefiniti. In H.264 la risoluzione arriva al massimo a 720p. **Salva e applica** le memorizza nei **cookie del browser**: non esiste nessun file di configurazione sul server. Senza cookie si usano i default scritti nel codice (`SETTINGS` in `yt_mjpeg.py`). Anche le ricerche recenti stanno in un cookie.
 
-## PO token: YouTube senza cookie
-drive-tube non usa cookie né account YouTube: la home mostra solo le ricerche. Dagli IP dei server cloud YouTube chiede spesso una verifica anti-bot; la supera il plugin [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), che genera i "PO token" che YouTube controlla nei browser veri. È fatto di due parti:
+## YouTube: cookie oppure PO token
+Dagli IP dei server cloud YouTube chiede spesso una verifica anti-bot. Ci sono due modi per superarla, anche insieme.
+
+### Cookie del tuo account (facoltativi)
+Esporta i cookie di youtube.com in formato Netscape e caricali dalla pagina admin (sezione *Cookie YouTube*): finiscono in `~/cookies.txt`, leggibile solo dal tuo utente. Con **Usa i cookie per** scegli chi li usa: *nessuno*, *solo admin* o *tutti*. Chi li usa agisce con il tuo account e nella sua home compaiono anche iscrizioni, "guarda più tardi" e "mi piace". Se il file c'è e non hai mai scelto, valgono per tutti, come nelle versioni precedenti. Senza cookie la home mostra solo le ricerche.
+
+### PO token, senza account
+Il plugin [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), che genera i "PO token" che YouTube controlla nei browser veri. È fatto di due parti:
 
 1. **Il server locale** (porta 4416, solo su `127.0.0.1`). Con Node 22 o successivo, una volta sola:
    ```bash
@@ -127,7 +133,7 @@ drive-tube non usa cookie né account YouTube: la home mostra solo le ricerche. 
 
 Poi **Prova con un video** chiede a YouTube un video breve e mostra se la richiesta passa e se il token è stato generato. Se YouTube rifiuta comunque, l'IP del server potrebbe essere bloccato: il PO token non aggira i blocchi per indirizzo.
 
-All'avvio drive-tube cancella il vecchio file `~/cookies.txt`, se c'è.
+Se condividi il server con altri, la combinazione più sicura è PO token per tutti e cookie per *nessuno* o *solo admin*.
 
 ## Aggiornamenti
 - **Dalla pagina admin**: sezione *Server*. **Controlla aggiornamenti** confronta la versione con quella su `main`; **Installa** scarica il file, ne verifica la sintassi, salva il backup `yt_mjpeg.py.bak` e riavvia il server.

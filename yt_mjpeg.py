@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.2"
+VERSION = "13.3"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -121,8 +121,8 @@ UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 HEADERS = "User-Agent: " + UA + "\r\nReferer: https://www.youtube.com/\r\n"
-# vecchio file dei cookie YouTube: non si usa piu', viene cancellato all'avvio
-OLD_COOKIES = os.path.expanduser("~/cookies.txt")
+# cookie YouTube facoltativi: dalla pagina admin si sceglie per chi usarli
+COOKIES = os.path.expanduser("~/cookies.txt")
 
 
 YTDLP_LOCAL = os.path.expanduser("~/.local/bin/yt-dlp")
@@ -311,8 +311,44 @@ def pot_test():
     return {"ok": p.returncode == 0, "token": tokens, "lines": keep[-25:] or ["nessuna riga utile nell'output"]}
 
 
+def cookie_mode():
+    """'off', 'admin' o 'all'. Mai impostato: 'all' se c'e' il file (come prima)."""
+    m = ACCESS.get("cookies")
+    if m in ("off", "admin", "all"):
+        return m
+    return "all" if os.path.isfile(COOKIES) else "off"
+
+
+def use_cookies():
+    # vale per la sessione legata al thread; senza sessione (richieste admin,
+    # prova PO token) niente cookie
+    if not os.path.isfile(COOKIES):
+        return False
+    m = cookie_mode()
+    s = getattr(_tls, "s", None)
+    if s is None:
+        return False
+    return m == "all" or (m == "admin" and s.who == "admin")
+
+
+def in_session(fn):
+    """La funzione, eseguita in un altro thread (es. ThreadPoolExecutor), lavora
+    sulla sessione di chi la prepara."""
+    sess = getattr(_tls, "s", None)
+
+    def run(*a, **k):
+        _tls.s = sess
+        try:
+            return fn(*a, **k)
+        finally:
+            _tls.s = None
+    return run
+
+
 def yt_cmd(*args):
     cmd = [ytdlp_bin()]
+    if use_cookies():
+        cmd += ["--cookies", COOKIES]
     # yt-dlp attiva da solo solo Deno: se c'e' soltanto Node va abilitato,
     # altrimenti alcune richieste a YouTube falliscono
     if not shutil.which("deno") and shutil.which("node"):
@@ -329,7 +365,8 @@ def set_page(url):
 
 
 def search_yt(q):
-    hit = feed_cache.get(("s", q))
+    ck = ("s", q, use_cookies())
+    hit = feed_cache.get(ck)
     if hit and time.time() - hit[0] < 600:
         return hit[1]
     p = subprocess.run(
@@ -345,13 +382,13 @@ def search_yt(q):
         url = parts[3].strip() if len(parts) > 3 else ''
         kind = 'channel' if vid.startswith('UC') or '/channel/' in url or '/@' in url else 'video'
         rows.append((vid, title, kind, url))
-    feed_cache[("s", q)] = (time.time(), rows)
+    feed_cache[ck] = (time.time(), rows)
     return rows
 
 
 def flat_rows(url, limit=8, start=1):
     end = start + limit - 1
-    key = (url, start, end)
+    key = (url, start, end, use_cookies())
     hit = feed_cache.get(key)
     if hit and time.time() - hit[0] < 600:
         return hit[1]
@@ -389,6 +426,33 @@ def related_of(vid):
     if not vid:
         return []
     return flat_rows("https://www.youtube.com/playlist?list=RD" + vid, 8)
+
+
+def account_sections():
+    jobs = [
+        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 1, 15),
+        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 16, 15),
+        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 31, 15),
+        ("Più tardi", "https://www.youtube.com/playlist?list=WL", 1, 12),
+        ("Mi piace", "https://www.youtube.com/playlist?list=LL", 1, 12),
+    ]
+    out = {}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futs = {pool.submit(flat_rows, url, n, start): name for name, url, start, n in jobs}
+        for fut in futs:
+            name = futs[fut]
+            try:
+                rows = fut.result()
+            except Exception as e:
+                print("feed", name, e, flush=True)
+                rows = []
+            got = out.setdefault(name, [])
+            have = set(v for v, t in got)
+            for vid, title in rows:
+                if vid not in have:
+                    got.append((vid, title))
+                    have.add(vid)
+    return [(name, out.get(name) or []) for name in ("Iscrizioni", "Più tardi", "Mi piace")]
 
 
 def cards(rows, seen, cur):
@@ -2891,6 +2955,21 @@ small{color:#999}
 </div>
 <div class="row"><small id="tools"></small></div>
 
+<h2>Cookie YouTube (facoltativi)</h2>
+<small>Con i cookie del tuo account YouTube le richieste passano piu' facilmente e nella home compaiono iscrizioni, "guarda piu' tardi" e "mi piace". Chi li usa agisce con il tuo account.</small>
+<div class="row"><span id="ckstate" class="na">controllo...</span></div>
+<div class="row">
+  <span>Usa i cookie per:</span>
+  <button data-ck="off">nessuno</button>
+  <button data-ck="admin">solo admin</button>
+  <button data-ck="all">tutti</button>
+</div>
+<form class="row" method="post" action="/admin/cookies" enctype="multipart/form-data">
+  <input type="file" name="f" accept=".txt,text/plain" required>
+  <button type="submit">Carica cookie (Netscape)</button>
+  <button type="button" class="warn" id="ckdel">Cancella i cookie</button>
+</form>
+
 <h2>PO token (verifica anti-bot di YouTube)</h2>
 <small>Senza cookie, i token del plugin bgutil fanno passare le richieste a YouTube. Servono il plugin e il suo server locale (vedi README).</small>
 <div class="row"><span id="potplug" class="na">plugin: controllo...</span></div>
@@ -3066,9 +3145,26 @@ $('pottest').onclick = function(){
     out.style.color = j.ok ? '#8f8' : '#f88';
   });
 };
+function loadCk(){
+  return api('cookies').then(function(j){
+    var names = {off: 'nessuno', admin: 'solo admin', all: 'tutti'};
+    $('ckstate').textContent = (j.present ? 'file caricato il ' + new Date(j.mtime * 1000).toLocaleString() : 'nessun file caricato') +
+      ' · in uso per: ' + names[j.mode] + (j.present || j.mode === 'off' ? '' : ' (ma manca il file)');
+    $('ckstate').className = j.present && j.mode !== 'off' ? 'ok' : 'na';
+    document.querySelectorAll('[data-ck]').forEach(function(b){ b.className = b.getAttribute('data-ck') === j.mode ? 'go' : ''; });
+  });
+}
+document.querySelectorAll('[data-ck]').forEach(function(b){
+  b.onclick = function(){ api('cookies/mode', {mode: b.getAttribute('data-ck')}).then(function(r){ done(r); loadCk(); }); };
+});
+$('ckdel').onclick = function(){
+  if (!confirm('Cancellare il file dei cookie YouTube dal server?')) return;
+  api('cookies/delete', {}).then(function(r){ done(r); loadCk(); });
+};
 load();
 loadYtdlp(false);
 loadPot();
+loadCk();
 setInterval(load, 5000);
 </script>
 </body></html>
@@ -3294,10 +3390,13 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 shown_q.append(query)
             all_queries = ([q] if q else []) + shown_q
-            # ricerche e suggeriti in parallelo
+            # ricerche, suggeriti e (con i cookie) account in parallelo, ognuno
+            # nella sessione di chi chiede
+            mine = use_cookies()
             with ThreadPoolExecutor(max_workers=6) as pool:
-                search_futures = {query: pool.submit(search_yt, query) for query in all_queries}
-                related_future = pool.submit(related_of, here) if here else None
+                search_futures = {query: pool.submit(in_session(search_yt), query) for query in all_queries}
+                related_future = pool.submit(in_session(related_of), here) if here else None
+                account_future = pool.submit(in_session(account_sections)) if mine else None
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
                 for vid, title, kind, url in search_futures[q].result():
@@ -3317,6 +3416,10 @@ class Handler(BaseHTTPRequestHandler):
             if here and related_future:
                 items.append("<h2>Suggeriti per questo video</h2>")
                 items.extend(cards(related_future.result(), seen, here))
+            for name, rows in (account_future.result() if account_future else []):
+                if rows:
+                    items.append("<h2>%s</h2>" % name)
+                    items.extend(cards(rows, seen, here))
             chips = "".join(
                 '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
@@ -3841,6 +3944,11 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         if path == "/admin/api/update/check":
             self.json_out(check_update())
             return
+        if path == "/admin/api/cookies":
+            st = os.stat(COOKIES) if os.path.isfile(COOKIES) else None
+            self.json_out({"present": bool(st), "size": st.st_size if st else 0,
+                           "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode()})
+            return
         if path == "/admin/api/pot":
             self.json_out(pot_status())
             return
@@ -3875,6 +3983,11 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.post_login(raw)
         elif path == "/admin/login":
             self.post_admin_login(raw)
+        elif path == "/admin/cookies":
+            if not ADMIN_PASS or not is_admin(hdr):
+                self.send_error(403)
+                return
+            self.post_cookies(raw)
         elif path.startswith("/admin/api/"):
             if not ADMIN_PASS or not is_admin(hdr):
                 self.json_out({"ok": False, "error": "accesso admin scaduto, ricarica la pagina"}, 403)
@@ -3999,6 +4112,27 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             _bprint("yt-dlp aggiornato a", v, flush=True)
             self.json_out({"ok": True, "version": v})
             return
+        if what == "cookies/mode":
+            mode = data.get("mode")
+            if mode not in ("off", "admin", "all"):
+                self.json_out({"ok": False, "error": "scelta non valida"})
+                return
+            with ACCESS_LOCK:
+                ACCESS["cookies"] = mode
+                access_save()
+            feed_cache.clear()
+            _bprint("admin: cookie YouTube per", mode, flush=True)
+            self.json_out({"ok": True})
+            return
+        if what == "cookies/delete":
+            try:
+                os.remove(COOKIES)
+            except FileNotFoundError:
+                pass
+            feed_cache.clear()
+            _bprint("admin: cookie YouTube cancellati", flush=True)
+            self.json_out({"ok": True, "msg": "cookie cancellati"})
+            return
         if what == "pot/plugin":
             try:
                 where = pot_install_plugin()
@@ -4018,6 +4152,28 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             threading.Thread(target=restart_self, daemon=True).start()
             return
         self.json_out({"ok": False, "error": "azione sconosciuta"}, 404)
+
+    def post_cookies(self, raw):
+        text = raw.decode("utf-8", "replace")
+        if "filename=" in text:
+            parts = text.split("\r\n\r\n", 1)
+            if len(parts) == 2:
+                text = parts[1].rsplit("\r\n--", 1)[0]
+        if "youtube.com" not in text or "\t" not in text:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("file non valido: servono i cookie di youtube.com in formato Netscape".encode("utf-8"))
+            return
+        fd = os.open(COOKIES, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text if text.endswith("\n") else text + "\n")
+        feed_cache.clear()
+        with SESSIONS_LOCK:
+            for x in SESSIONS.values():
+                x.state["err"] = ""
+        _bprint("admin: cookie YouTube caricati", flush=True)
+        self.redirect("/admin")
 
     def log_message(self, *a):
         pass
@@ -4063,12 +4219,6 @@ if __name__ == "__main__":
         "attivo" if ADMIN_PASS else "spento (manca YT_ADMIN)"), flush=True)
     threading.Thread(target=janitor, daemon=True).start()
     threading.Thread(target=pot_supervisor, daemon=True).start()
-    if os.path.exists(OLD_COOKIES):
-        try:
-            os.remove(OLD_COOKIES)
-            print("cancellato il vecchio file dei cookie YouTube (%s)" % OLD_COOKIES, flush=True)
-        except OSError as e:
-            print("non riesco a cancellare %s: %s" % (OLD_COOKIES, e), flush=True)
     serve_https()
     try:
         QuietServer(("0.0.0.0", PORT), Handler).serve_forever()
