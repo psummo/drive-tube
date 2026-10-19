@@ -123,6 +123,14 @@ Then **Prova con un video** (test with a video) asks YouTube for a short video a
 
 If you share the server, the safest setup is PO token for everyone and cookies for nobody or admin only.
 
+### When YouTube still says "Sign in to confirm you're not a bot"
+That message usually means YouTube distrusts the server's IP address (cloud providers are flagged often), and a PO token alone does not fix it. The admin page's *Rete verso YouTube* (network to YouTube) section helps:
+- **Trova una configurazione che funziona** (find a working setup) tries several combinations of YouTube player client (`tv`, `mweb`, `web_safari`, `web_embedded`, `android_vr`) and IPv4-only, and shows which pass. **Usa questa** (use this) saves one; it applies to every yt-dlp call (`--extractor-args youtube:player_client=...`, `-4`).
+- **Proxy**: if nothing passes, route yt-dlp through a connection YouTube trusts, such as a SOCKS proxy on a home network (`socks5://host:port`, also `http://` and `https://`). The diagnosis uses the saved proxy too.
+- Otherwise, cookies (above) for the admin only.
+
+Settings are stored in `~/.config/drive-tube/access.json`.
+
 ## HTTPS (optional)
 The app works over plain http; HTTPS protects access codes and the admin password on the network. The server enables it on a separate port (**8443**) when it finds a certificate in `~/yt-cert/fullchain.pem` and `~/yt-cert/privkey.pem`; port 8090 keeps working.
 

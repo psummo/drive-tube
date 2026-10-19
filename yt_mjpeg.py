@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.5"
+VERSION = "13.6"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -535,24 +535,43 @@ def pot_install_plugin():
     return POT_ZIP
 
 
-def pot_test():
-    """Chiede a yt-dlp i formati di un video breve e riporta le righe sul PO token."""
+def pot_test(net=None):
+    """Chiede a yt-dlp i formati di un video breve e riporta le righe utili."""
     try:
         p = subprocess.run(
             yt_cmd("-v", "--simulate", "--no-playlist", "-f", "bv*[height<=360]+ba/b",
-                   "--user-agent", UA, POT_TEST_VIDEO),
+                   "--user-agent", UA, POT_TEST_VIDEO, net=net),
             capture_output=True, text=True, timeout=120,
         )
     except Exception as e:
-        return {"ok": False, "lines": ["yt-dlp non partito: %s" % e]}
-    keep = []
+        return {"ok": False, "token": False, "error": "yt-dlp non partito: %s" % e,
+                "lines": ["yt-dlp non partito: %s" % e]}
+    keep, err = [], ""
     for line in (p.stderr or "").splitlines() + (p.stdout or "").splitlines():
         low = line.lower()
         if ("[pot" in low or "po token" in low or "error" in low or "sign in" in low
-                or "js runtime" in low or "jsc" in low or "challenge" in low):
+                or "js runtime" in low or "jsc" in low or "challenge" in low or "player_client" in low):
             keep.append(re.sub(r"https?://\S+", "<url>", line.strip())[:220])
+        if line.startswith("ERROR:"):
+            err = re.sub(r"https?://\S+", "<url>", line[6:].strip())
+            err = re.sub(r"^\[youtube\] [\w-]+: ", "", err)[:160]
     tokens = any("generating a" in x.lower() and "po token" in x.lower() for x in keep)
-    return {"ok": p.returncode == 0, "token": tokens, "lines": keep[-25:] or ["nessuna riga utile nell'output"]}
+    return {"ok": p.returncode == 0, "token": tokens, "error": err,
+            "lines": keep[-25:] or ["nessuna riga utile nell'output"]}
+
+
+def yt_diagnose():
+    """Prova le combinazioni di client e IPv4 (con il proxy salvato) e dice quali passano."""
+    proxy = (ACCESS.get("yt") or {}).get("proxy", "")
+    nets = [{"client": c, "ipv4": v4, "proxy": proxy} for c, v4 in YT_VARIANTS]
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        res = list(ex.map(pot_test, nets))
+    out = []
+    for n, r in zip(nets, res):
+        out.append({"client": n["client"], "ipv4": n["ipv4"], "label": yt_net_label(n),
+                    "ok": r["ok"], "token": r["token"], "error": r.get("error", "")})
+        _bprint("diagnosi YouTube:", yt_net_label(n), "->", "OK" if r["ok"] else (r.get("error") or "errore"), flush=True)
+    return out
 
 
 def cookie_mode():
@@ -589,10 +608,43 @@ def in_session(fn):
     return run
 
 
-def yt_cmd(*args):
+# Rete verso YouTube, scelta dalla pagina admin: client di YouTube da usare,
+# solo IPv4, proxy. Dagli IP dei server YouTube a volte blocca un client o gli
+# indirizzi IPv6 ma non gli altri; la diagnosi in admin prova le combinazioni.
+YT_VARIANTS = [
+    ("", False), ("", True),
+    ("tv", False), ("tv", True),
+    ("mweb", False), ("web_safari", False), ("web_embedded", False), ("android_vr", True),
+]
+
+
+def yt_net(net=None):
+    n = ACCESS.get("yt") if net is None else net
+    n = n if isinstance(n, dict) else {}
+    out = []
+    if n.get("ipv4"):
+        out.append("-4")
+    if n.get("client"):
+        out += ["--extractor-args", "youtube:player_client=" + n["client"]]
+    if n.get("proxy"):
+        out += ["--proxy", n["proxy"]]
+    return out
+
+
+def yt_net_label(n):
+    t = ("client " + n["client"]) if n.get("client") else "client predefiniti"
+    if n.get("ipv4"):
+        t += ", solo IPv4"
+    if n.get("proxy"):
+        t += ", proxy"
+    return t
+
+
+def yt_cmd(*args, net=None):
     cmd = [ytdlp_bin()]
     if use_cookies():
         cmd += ["--cookies", COOKIES]
+    cmd += yt_net(net)
     # yt-dlp attiva da solo solo Deno: se c'e' soltanto Node va abilitato,
     # altrimenti alcune richieste a YouTube falliscono
     if not shutil.which("deno"):
@@ -3227,6 +3279,19 @@ small{color:#999}
 </div>
 <div id="potout" style="white-space:pre-wrap;font:12px/1.4 monospace;background:#0b0b0b;border:1px solid #333;padding:8px;display:none"></div>
 
+<h2>Rete verso YouTube</h2>
+<small>Se YouTube risponde "Sign in to confirm you're not a bot" anche con il PO token, di solito blocca l'indirizzo del server. A volte basta un altro client di YouTube o solo IPv4: la diagnosi prova le combinazioni e puoi usare quella che passa. Se non passa niente, serve un proxy su una connessione di casa (o i cookie).</small>
+<div class="row"><span id="netcur" class="na">impostazione: controllo...</span></div>
+<div class="row">
+  <button class="go" id="netdiag">Trova una configurazione che funziona</button>
+  <button id="netreset">Torna ai valori predefiniti</button>
+</div>
+<table id="netres" style="display:none"><thead><tr><th>Configurazione</th><th>Risultato</th><th></th></tr></thead><tbody></tbody></table>
+<div class="row">
+  <input id="netproxy" placeholder="proxy, es. socks5://casa.example:1080 (vuoto = nessuno)" size="44">
+  <button id="netproxybtn">Salva proxy</button>
+</div>
+
 <h2>Log</h2>
 <div class="row"><button id="logbtn">Mostra il log</button></div>
 <div id="log"></div>
@@ -3399,12 +3464,43 @@ $('potinst').onclick = function(){
     say('plugin installato in ' + j.path); loadPot();
   });
 };
+function loadNet(){
+  return api('pot').then(function(j){
+    var n = j.net || {};
+    $('netcur').textContent = 'in uso: ' + (n.label || 'client predefiniti');
+    if (document.activeElement !== $('netproxy')) $('netproxy').value = n.proxy || '';
+  });
+}
+$('netdiag').onclick = function(){
+  var b = $('netdiag'), t = $('netres'), tb = t.querySelector('tbody');
+  b.disabled = true; t.style.display = 'table';
+  tb.innerHTML = '<tr><td colspan="3" class="na">provo ' + 8 + ' combinazioni, serve circa un minuto...</td></tr>';
+  api('yt/diagnose', {}).then(function(j){
+    b.disabled = false; tb.innerHTML = '';
+    if (!j.ok) { tb.innerHTML = '<tr><td colspan="3" class="ko">' + esc(j.error) + '</td></tr>'; return; }
+    var any = false;
+    j.results.forEach(function(r){
+      var tr = document.createElement('tr');
+      any = any || r.ok;
+      tr.innerHTML = '<td>' + esc(r.label) + '</td><td class="' + (r.ok ? 'ok' : 'ko') + '">' +
+        (r.ok ? 'funziona' + (r.token ? ' (con PO token)' : '') : esc(r.error || 'rifiutato')) + '</td><td>' +
+        (r.ok ? '<button class="go">Usa questa</button>' : '') + '</td>';
+      var btn = tr.querySelector('button');
+      if (btn) btn.onclick = function(){ api('yt/net', {client: r.client, ipv4: r.ipv4}).then(function(x){ done(x); loadNet(); }); };
+      tb.appendChild(tr);
+    });
+    if (!any) say('nessuna combinazione passa: YouTube blocca l\u0027indirizzo del server. Serve un proxy di casa o i cookie.', true);
+  });
+};
+$('netreset').onclick = function(){ api('yt/net', {client: '', ipv4: false}).then(function(x){ done(x); loadNet(); }); };
+$('netproxybtn').onclick = function(){ api('yt/net', {proxy: $('netproxy').value.trim()}).then(function(x){ done(x); loadNet(); }); };
+loadNet();
 $('pottest').onclick = function(){
   var b = $('pottest'), out = $('potout'); b.disabled = true;
   out.style.display = 'block'; out.textContent = 'chiedo a YouTube un video di prova, puo\u0027 servire un minuto...';
   api('pot/test', {}).then(function(j){
     b.disabled = false;
-    out.textContent = (j.ok ? (j.token ? 'OK: video raggiungibile e PO token generato' : 'OK: video raggiungibile (nessun PO token usato)') : 'ERRORE: YouTube ha rifiutato la richiesta') + String.fromCharCode(10, 10) + (j.lines || []).join(String.fromCharCode(10));
+    out.textContent = (j.ok ? (j.token ? 'OK: video raggiungibile e PO token generato' : 'OK: video raggiungibile (nessun PO token usato)') : 'ERRORE: YouTube ha rifiutato la richiesta') + ' [' + (j.net || '') + ']' + String.fromCharCode(10, 10) + (j.lines || []).join(String.fromCharCode(10));
     out.style.color = j.ok ? '#8f8' : '#f88';
   });
 };
@@ -4213,7 +4309,11 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                            "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode()})
             return
         if path == "/admin/api/pot":
-            self.json_out(pot_status())
+            st = pot_status()
+            n = ACCESS.get("yt") or {}
+            st["net"] = {"label": yt_net_label(n), "client": n.get("client", ""),
+                         "ipv4": bool(n.get("ipv4")), "proxy": n.get("proxy", "")}
+            self.json_out(st)
             return
         if path == "/admin/api/ytdlp":
             self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
@@ -4414,7 +4514,35 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.json_out({"ok": True})
             return
         if what == "pot/test":
-            self.json_out(pot_test())
+            r = pot_test()
+            r["net"] = yt_net_label(ACCESS.get("yt") or {})
+            self.json_out(r)
+            return
+        if what == "yt/diagnose":
+            self.json_out({"ok": True, "results": yt_diagnose()})
+            return
+        if what == "yt/net":
+            cur_net = dict(ACCESS.get("yt") or {})
+            if "client" in data:
+                c = str(data.get("client") or "")
+                if c and not re.fullmatch(r"[a-z_]{2,30}", c):
+                    self.json_out({"ok": False, "error": "client non valido"})
+                    return
+                cur_net["client"] = c
+            if "ipv4" in data:
+                cur_net["ipv4"] = bool(data.get("ipv4"))
+            if "proxy" in data:
+                px = str(data.get("proxy") or "").strip()
+                if px and not re.fullmatch(r"(https?|socks5h?|socks4a?)://\S+", px):
+                    self.json_out({"ok": False, "error": "proxy non valido: usa http://, https:// o socks5://"})
+                    return
+                cur_net["proxy"] = px
+            with ACCESS_LOCK:
+                ACCESS["yt"] = cur_net
+                access_save()
+            feed_cache.clear()
+            _bprint("admin: rete YouTube ->", yt_net_label(cur_net), flush=True)
+            self.json_out({"ok": True, "msg": "salvato: " + yt_net_label(cur_net)})
             return
         if what == "restart":
             _bprint("admin: riavvio", flush=True)
