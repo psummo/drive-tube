@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# drive-tube - https://github.com/psummo/drive-tube - MIT License
+# Solo per i passeggeri, mai per chi guida: ogni conseguenza dell'uso durante
+# la guida e' responsabilita' esclusiva del conducente. Vedi README e LICENSE.
 import builtins
 import hashlib
 import hmac
@@ -22,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.8"
+VERSION = "13.9"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1719,7 +1722,11 @@ function pollRate(){
         if (Math.abs(diff) > 0.15) desync = (diff > 0 ? '  audio avanti ' : '  video avanti ') + Math.abs(diff).toFixed(1) + 's';
         else desync = '  sync ok';
       }
-      hud.textContent = (vmode === 'h264' && hs ? 'H.264 pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'browser ' + frames.length) + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync;
+      var fps = '';
+      if (vmode === 'h264' && hs && hs.started && !userPaused && !stalled) {
+        fps = '  ' + hs.fps.toFixed(0) + ' fps (video ' + (1 / hs.dur).toFixed(0) + ')' + (hs.lateNow ? '  saltati ' + hs.lateNow : '');
+      }
+      hud.textContent = (vmode === 'h264' && hs ? 'H.264 pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'browser ' + frames.length) + fps + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync;
     }
   }).catch(function(){});
 }
@@ -2061,7 +2068,9 @@ function stopAudio(){
     try { audioSources[i].stop(); } catch (e) {}
   }
   audioSources = [];
-  if (actx && actx.state === 'running') actx.suspend();
+  // il contesto resta acceso: fermarlo qui obbligava a riaccenderlo fuori da un
+  // tocco, e alcuni browser (Tesla compreso) a volte non lo permettono: il video
+  // restava fermo sul primo frame finche' non si toccava la barra
 }
 function concatU8(a, b){
   var c = new Uint8Array(a.length + b.length);
@@ -2423,7 +2432,8 @@ function hNew(X){
   hs = {
     gen: gen, X: X, pk: [], lastPts: -1, outPts: -1e9, shownPts: -1e9, dur: 1 / 30,
     target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
-    late: 0, abort: null
+    late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
+    fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0
   };
   hOnFrame = function(y, u, v, ly, lu, lv, w, h, pts){
     if (!hs) return;
@@ -2506,6 +2516,7 @@ function hPreroll(budgetMs){
   return hs.shownPts >= hs.X - hs.dur;
 }
 function showVideoH(){
+  if (actx && audioOn && actx.state === 'suspended') actx.resume();
   screen.style.display = 'block';
   freezeC.style.display = 'none';
   overlay.style.display = 'none';
@@ -2533,9 +2544,40 @@ function hFinish(){
   draw();
   showNext(true);
 }
+// fotogrammi mostrati nell'ultimo secondo e fps del video originale
+function hFps(){
+  var now = performance.now();
+  if (!hs.fpsAt) { hs.fpsAt = now; hs.fpsDrawn = hs.drawn; hs.fpsLate = hs.late; return; }
+  var dt = (now - hs.fpsAt) / 1000;
+  if (dt < 1) return;
+  hs.fps = (hs.drawn - hs.fpsDrawn) / dt;
+  hs.lateNow = hs.late - hs.fpsLate;
+  hs.fpsAt = now; hs.fpsDrawn = hs.drawn; hs.fpsLate = hs.late;
+}
+// video fermo pur essendo in riproduzione (orologio audio bloccato): prima si
+// prova a riaccendere l'audio, poi si chiede un tocco, che riparte da qui
+function hWatch(T){
+  if (T > hs.lastT + 0.01) { hs.lastT = T; hs.frozenAt = 0; return; }
+  var now = performance.now();
+  if (!hs.frozenAt) { hs.frozenAt = now; return; }
+  var f = now - hs.frozenAt;
+  if (f > 1500 && !hs.resumeTried && actx && actx.state !== 'running') {
+    hs.resumeTried = true;
+    actx.resume();
+  }
+  if (f > 3500 && !hs.askedTap) {
+    hs.askedTap = true;
+    ui('video fermo (audio ' + (actx ? actx.state : 'assente') + '): tocca per ripartire');
+    overlay.style.display = 'flex';
+    msg.style.display = 'block';
+    msg.textContent = 'Tocca \u25B6 per avviare';
+    go.style.display = 'block';
+  }
+}
 function hTick(){
   if (!hs || hs.gen !== gen) return;
   if (userPaused) {
+    hs.frozenAt = 0; hs.fpsAt = 0;
     if (actx && actx.state === 'running') actx.suspend();
     var hud0 = document.getElementById('hud');
     if (hud0) hud0.textContent = 'pausa, video pronto ' + hAhead().toFixed(0) + ' s';
@@ -2544,11 +2586,13 @@ function hTick(){
   pollRate();
   var ahead = hs.lastPts - hClock();
   if (!stalled && !hs.ended && ahead < H_STALL) {
+    hs.frozenAt = 0; hs.fpsAt = 0;
     stallPlay('carico il video, ' + Math.max(0, ahead).toFixed(1) + ' s pronti');
     return;
   }
   if (stalled) {
     if (!hs.ended && ahead < H_RESUME) {
+      hs.frozenAt = 0; hs.fpsAt = 0;
       showStatus('carico il video, ' + Math.max(0, ahead).toFixed(1) + ' s pronti');
       return;
     }
@@ -2560,11 +2604,13 @@ function hTick(){
   if (audioHold.length && audioArm) flushHeldAudio();
   var T = hClock();
   hs.target = T;
+  hFps();
   var until = performance.now() + 25;
   while (hs.outPts + hs.dur <= T + hs.dur * 0.5 && performance.now() < until) {
     if (!hDecodeNext()) break;
   }
-  if (hs.ended && hs.flushed && !hs.pk.length && T > hs.outPts + hs.dur) hFinish();
+  if (hs.ended && hs.flushed && !hs.pk.length && T > hs.outPts + hs.dur) { hFinish(); return; }
+  hWatch(T);
 }
 
 // avvio di uno stream H.264 a partire da pos (chiamata da beginAt)

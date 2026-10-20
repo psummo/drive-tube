@@ -1,5 +1,12 @@
 # drive-tube
-A lightweight YouTube player for in-car browsers (built for the Tesla browser), which block `<video>` and `<audio>` while driving.
+
+> [!WARNING]
+> **For passengers only. Never for the driver.**
+> drive-tube is meant to entertain passengers, for example children in the back seat or on a rear screen. The driver must never watch, operate or be distracted by it while the vehicle is moving. Using it is entirely at your own risk: the driver alone is responsible for driving safely and for complying with the traffic laws of their country, and any accident, injury, damage, fine or other consequence arising from the use of this tool is the sole responsibility of the driver. The authors and contributors accept no liability of any kind.
+>
+> drive-tube is an independent open-source project, provided "as is" without warranty of any kind (see [LICENSE](LICENSE)). It is not affiliated with, endorsed by or connected to Tesla, Google or YouTube. You are responsible for respecting YouTube's terms of service and the rights of content owners.
+
+A lightweight YouTube player for in-car browsers (built for the Tesla browser), so that passengers can keep watching while the car is moving: those browsers block `<video>` and `<audio>` while driving.
 
 drive-tube is a single Python file. `yt-dlp` finds the YouTube stream and `ffmpeg` prepares it for the browser, which plays it on a canvas and through the Web Audio API, with no `<video>` or `<audio>` tags. Audio is the master clock and the video follows it.
 
@@ -164,6 +171,8 @@ The gear icon (top left) opens the settings: video format (H.264 or MJPEG), reso
 
 Tapping the video shows the suggestions, the home button and a pause button in the middle; they hide after 5 seconds. While paused they stay visible.
 
+The line at the top of the screen shows, in H.264 mode, how many seconds are buffered and the live frame rate: `28 fps (video 30)` means 28 frames shown in the last second out of the 30 the video has; `saltati N` (skipped) counts frames dropped because the decoder fell behind. If the video ever stays frozen after pressing play (the browser kept the audio switched off), the player notices after a few seconds and asks for a tap to restart from the same point.
+
 ## Updates
 - **From the admin page**, *Server* section: the update button compares the version with `main`; installing downloads the file, checks its syntax, keeps a backup in `yt_mjpeg.py.bak` and restarts the server.
 - **By hand**: `cd drive-tube && git pull`, then restart the service. If you had installed from the admin page, run `git checkout yt_mjpeg.py` first.
@@ -178,3 +187,7 @@ Available after login:
 
 ## WebAssembly decoder
 The H.264 decoder is embedded in `yt_mjpeg.py`. The wrapper source is `wasm/h264dec.c`; `wasm/build.sh` rebuilds it (only clang/lld, cmake, ninja and git are needed) and embeds it back into the file.
+
+
+## License
+drive-tube is open source, released under the [MIT License](LICENSE). The embedded WebAssembly H.264 decoder is built from [FFmpeg](https://ffmpeg.org) n7.1 (LGPL 2.1 or later, configured without GPL parts); `wasm/build.sh` rebuilds it from the official FFmpeg sources.
