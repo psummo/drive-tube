@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.7"
+VERSION = "13.8"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -733,7 +733,7 @@ def flat_rows(url, limit=8, start=1):
             text=True, capture_output=True, timeout=30,
         )
     except Exception as e:
-        print("flat", url, e, flush=True)
+        print("elenco non riuscito:", e, flush=True)
         return []
     rows = []
     for line in p.stdout.splitlines():
@@ -747,7 +747,7 @@ def flat_rows(url, limit=8, start=1):
     feed_cache[key] = (time.time(), rows)
     if not rows:
         err = (p.stderr or "")[-200:]
-        print("flat vuoto", url, err, flush=True)
+        print("elenco vuoto:", err, flush=True)
     return rows
 
 
@@ -773,7 +773,7 @@ def account_sections():
             try:
                 rows = fut.result()
             except Exception as e:
-                print("feed", name, e, flush=True)
+                print("elenco home non riuscito:", e, flush=True)
                 rows = []
             got = out.setdefault(name, [])
             have = set(v for v, t in got)
@@ -814,12 +814,31 @@ _tls = threading.local()
 _bprint = builtins.print
 
 
+# Privacy: nel log non finisce mai cosa guarda o cerca qualcuno. Indirizzi,
+# id dei video, ricerche e titoli vengono tolti prima di scrivere.
+_PRIV = [
+    (re.compile(r"(?:https?://|www\.)\S+"), "<url>"),
+    (re.compile(r"\b(?:youtube\.com|youtu\.be|googlevideo\.com)/\S*"), "<url>"),
+    (re.compile(r"(\[youtube[^\]]*\]) [^:\s]+:"), r"\1 <video>:"),
+    (re.compile(r"\bytsearch\d*:.*"), "ytsearch:<ricerca>"),
+    (re.compile(r"\b(v|watch|list|q|search_query)=[^\s&]+"), r"\1=<...>"),
+]
+
+
+def privacy(text):
+    for rx, sub in _PRIV:
+        text = rx.sub(sub, text)
+    return text
+
+
 def print(*a, **k):
-    # nel log ogni riga di una sessione porta il suo nome
+    # nel log ogni riga di una sessione porta il suo nome (codice, non il video)
     s = getattr(_tls, "s", None)
+    line = privacy(" ".join(str(x) for x in a))
     if s is not None:
-        a = ("[%s]" % s.tag,) + a
-    _bprint(*a, **k)
+        line = "[%s] %s" % (s.tag, line)
+    k.pop("sep", None)
+    _bprint(line, **k)
 
 
 def new_state():
@@ -1089,8 +1108,6 @@ def ytdlp_urls():
     if not lines:
         state["err"] = "Nessuno stream: video bloccato o non disponibile."
         raise RuntimeError(state["err"])
-    for i, u in enumerate(lines):
-        print("url[%d] %s ..." % (i, u[:80]), flush=True)
     return lines
 
 
@@ -3270,7 +3287,7 @@ small{color:#999}
 </div>
 
 <h2>Sessioni attive</h2>
-<table id="sess"><thead><tr><th>Chi</th><th>Video</th><th>Modo</th><th>ffmpeg</th><th>Ultima attivita'</th><th></th></tr></thead><tbody></tbody></table>
+<table id="sess"><thead><tr><th>Chi</th><th>Stato</th><th>Modo</th><th>ffmpeg</th><th>Ultima attivita'</th><th></th></tr></thead><tbody></tbody></table>
 
 <h2>Server</h2>
 <div class="row">
@@ -3370,7 +3387,7 @@ function render(st){
   st.sessions.forEach(function(x){
     var tr = document.createElement('tr');
     tr.innerHTML = '<td>' + esc(x.who) + ' <small>' + esc(x.sid.slice(0, 4)) + '</small></td>' +
-      '<td>' + (x.video ? '<a href="https://www.youtube.com/watch?v=' + esc(x.video) + '" target="_blank">' + esc(x.video) + '</a>' : '<span class="na">-</span>') +
+      '<td>' + (x.playing ? 'in riproduzione' : '<span class="na">home</span>') +
       (x.err ? ' <small class="ko">' + esc(x.err) + '</small>' : '') + '</td>' +
       '<td>' + esc(x.vmode) + '</td><td class="' + (x.ff ? 'ok' : 'na') + '">' + (x.ff ? 'attivo' : 'fermo') + '</td>' +
       '<td>' + ago(x.seen) + '</td><td><button class="warn">Chiudi</button></td>';
@@ -4324,7 +4341,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 ff = x.state.get("ff")
                 rows.append({
                     "sid": x.sid, "who": x.who,
-                    "video": x.url.split("v=")[-1][:11] if "v=" in x.url else "",
+                    "playing": bool(x.url),
                     "vmode": x.state.get("vmode"), "ff": bool(ff and ff.poll() is None),
                     "seen": now - x.seen, "err": x.state.get("err") or "",
                 })
@@ -4647,11 +4664,11 @@ def serve_https():
         print("https non avviato:", e, flush=True)
         return
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    print("https://0.0.0.0:%d/" % port, flush=True)
+    _bprint("https://0.0.0.0:%d/" % port, flush=True)
 
 
 if __name__ == "__main__":
-    print("http://0.0.0.0:%d/" % PORT, flush=True)
+    _bprint("http://0.0.0.0:%d/" % PORT, flush=True)
     print("codici attivi: %d, admin %s" % (
         sum(1 for c in ACCESS["codes"] if c.get("enabled", True)),
         "attivo" if ADMIN_PASS else "spento (manca YT_ADMIN)"), flush=True)

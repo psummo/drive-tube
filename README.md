@@ -101,6 +101,12 @@ The `ExecStartPre` line pulls the latest version every time the service starts. 
 
 Over plain http, codes and the admin password travel unencrypted. If you share the server, use HTTPS (see below).
 
+## Privacy
+drive-tube does not keep track of what people watch or search:
+- the log never contains video ids, titles, searches or stream URLs (they are replaced by `<video>`, `<ricerca>`, `<url>` before writing), only technical events tagged with the access code's name;
+- the admin page shows each session's code, mode and last activity, but not the video;
+- nothing about videos is written to disk on the server. Recent searches and settings live in the viewer's own browser cookies.
+
 ## YouTube: cookies or PO token
 From cloud server IPs, YouTube often asks for an anti-bot check. There are two ways to pass it, and they can be combined.
 
