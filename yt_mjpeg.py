@@ -2341,6 +2341,7 @@ function togglePlay(){
   if (go.style.display !== 'none') { startBoth(); return; }
   fetch('/ctrl?pause=1').then(ck).then(function(r){ return r.text(); }).then(function(t){
     if (t === 'paused') {
+      if (hs && hs.started && !stalled) hs.holdT = hClock();
       userPaused = true;
       stopClock();
       if (actx && actx.state === 'running') actx.suspend();
@@ -2353,9 +2354,11 @@ function togglePlay(){
       flushHeldAudio();
       startClock();
       playOrigin = performance.now() - drawnT * 1000;
+      if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
       ui('ripresa, buffer ' + frames.length);
     }
   }).catch(function(){
+    if (!userPaused && hs && hs.started && !stalled) hs.holdT = hClock();
     userPaused = !userPaused;
     if (userPaused) {
       stopClock();
@@ -2367,6 +2370,7 @@ function togglePlay(){
       flushHeldAudio();
       startClock();
       playOrigin = performance.now() - drawnT * 1000;
+      if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
     }
   });
 }
@@ -2386,6 +2390,12 @@ var hs = null;
 var hWasm = null, hMem = null, hReady = null;
 var hOnFrame = function(){};
 var H_START = 3, H_STALL = 0.5, H_RESUME = 4, H_AHEAD = 120;
+// Linea lenta: a ogni blocco per caricamento si aspetta un buffer piu' lungo
+// prima di ripartire (4, 12, 20, 28, poi 30 s), e anche i video successivi
+// partono con piu' margine. Vale per tutta la pagina.
+var hStalls = 0;
+function hResumeNeed(){ return Math.min(30, H_RESUME + 8 * hStalls); }
+function hStartNeed(){ return Math.min(20, H_START + 6 * hStalls); }
 var NL = String.fromCharCode(10);
 
 function setVmode(m){
@@ -2602,7 +2612,12 @@ function hRawClock(){
 // sembrava meno fluido dei suoi fps. Qui si segue performance.now() e lo si
 // corregge piano verso l'audio; se l'audio si ferma (pausa, stallo) ci si ferma.
 function hClock(){
-  if (!hs.started || userPaused || stalled) { hs.clk = null; return hs.X + drawnT; }
+  if (!hs.started) { hs.clk = null; return hs.X + drawnT; }
+  // fermi (pausa o caricamento): l'orologio resta dove si e' fermato. Prima si
+  // usava l'ultimo frame mostrato, che poteva essere indietro rispetto
+  // all'audio: alla ripartenza il buffer sembrava subito finito e il player
+  // alternava fermo/riparti decine di volte al secondo
+  if (userPaused || stalled) { hs.clk = null; return hs.holdT != null ? hs.holdT : hs.X + drawnT; }
   var raw = hRawClock(), now = performance.now();
   var c = hs.clk;
   if (!c || (actx && audioOn && audioArm && aDiag.sched > 0 && actx.state !== 'running')) {
@@ -2728,17 +2743,22 @@ function hTick(){
   var ahead = hs.lastPts - hClock();
   if (!stalled && !hs.ended && ahead < H_STALL) {
     hs.frozenAt = 0; hs.fpsAt = 0;
-    stallPlay('carico il video, ' + Math.max(0, ahead).toFixed(1) + ' s pronti');
+    hs.holdT = hClock();
+    hStalls++;
+    ui('caricamento: fermo ' + hStalls + ', riparto con ' + hResumeNeed() + ' s pronti');
+    stallPlay('carico il video, ' + Math.max(0, ahead).toFixed(1) + ' / ' + hResumeNeed() + ' s');
     return;
   }
   if (stalled) {
-    if (!hs.ended && ahead < H_RESUME) {
+    if (!hs.ended && ahead < hResumeNeed()) {
       hs.frozenAt = 0; hs.fpsAt = 0;
-      showStatus('carico il video, ' + Math.max(0, ahead).toFixed(1) + ' s pronti');
+      showStatus('linea lenta: carico il video, ' + Math.max(0, ahead).toFixed(1) + ' / ' + hResumeNeed() + ' s');
       return;
     }
     resumePlay();
-    playOrigin = performance.now() - drawnT * 1000;
+    playOrigin = performance.now() - ((hs.holdT != null ? hs.holdT : hs.X + drawnT) - hs.X) * 1000;
+    hs.holdT = null;
+    hs.clk = null;
     // audio e video erano fermi insieme: l'audio programmato e' ancora allineato
     if (actx && audioOn && actx.state === 'suspended') actx.resume();
   }
@@ -2801,8 +2821,8 @@ function beginH264(my, t0){
       showStatus('nessun dato video. controllo cookie nel log');
       return;
     }
-    showStatus('caricamento ' + Math.max(0, ahead).toFixed(1) + ' s' + (first && ahead >= H_START && !audioReady ? ', audio' : ''));
-    if (first && (ahead >= H_START || hs.ended) && (audioReady || elapsed > 8000)) {
+    showStatus('caricamento ' + Math.max(0, ahead).toFixed(1) + ' / ' + hStartNeed() + ' s' + (first && ahead >= hStartNeed() && !audioReady ? ', audio' : ''));
+    if (first && (ahead >= hStartNeed() || hs.ended) && (audioReady || elapsed > 8000)) {
       clearInterval(fillWait);
       showVideoH();
     }
