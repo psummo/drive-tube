@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.0"
+VERSION = "14.1"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1726,11 +1726,13 @@ function pollRate(){
       if (vmode === 'h264' && hs && hs.started && !userPaused && !stalled) {
         fps = '  ' + hs.fps.toFixed(0) + ' fps (video ' + (1 / hs.dur).toFixed(0) + ')' + (hs.lateNow ? '  saltati ' + hs.lateNow : '');
       }
-      hud.textContent = (vmode === 'h264' && hs ? 'H.264 pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'browser ' + frames.length) + fps + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync;
+      var au = '  audio ' + (actx ? actx.state : 'assente') + ' ' + aDiag.kb.toFixed(0) + 'KB ' + aDiag.blk + 'blk ' + aDiag.sched + 'prog' + (aDiag.err ? ' ' + aDiag.err + 'err' : '') + (audioHold.length ? ' attesa ' + audioHold.length : '');
+      hud.textContent = (vmode === 'h264' && hs ? 'H.264 pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'browser ' + frames.length) + fps + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync + au;
     }
   }).catch(function(){});
 }
 function ui(line){
+  try { fetch('/clog?m=' + encodeURIComponent(String(line).slice(0, 200))).catch(function(){}); } catch (e) {}
   var box = document.getElementById('log');
   var row = document.createElement('div');
   row.textContent = line;
@@ -1906,7 +1908,11 @@ function scheduleBuf(buf){
     if (i >= 0) audioSources.splice(i, 1);
     src.disconnect();
   };
-  try { src.start(when, Math.min(skip, Math.max(0, buf.duration - 0.001))); audioSources.push(src); } catch (e) {}
+  try {
+    src.start(when, Math.min(skip, Math.max(0, buf.duration - 0.001))); audioSources.push(src);
+    aDiag.sched++;
+    if (!aDiag.firstSched) { aDiag.firstSched = true; ui('audio: primo blocco tra ' + (when - actx.currentTime).toFixed(2) + 's, contesto ' + actx.state); }
+  } catch (e) { ui('audio: start fallito (' + e + ')'); }
   audioCursor += buf.duration;
   audioNext = syncOrigin + audioCursor;
 }
@@ -2051,6 +2057,9 @@ function ensureCtx(){
   if (!actx) {
     var AC = window.AudioContext || window.webkitAudioContext;
     try { actx = new AC({sampleRate: 48000}); } catch (e) { actx = new AC(); }
+    aDiag.ctx = actx.state;
+    ui('audio creato: ' + actx.state + ', ' + actx.sampleRate + ' Hz');
+    actx.onstatechange = function(){ aDiag.ctx = actx.state; ui('audio: ' + actx.state + ' a ' + actx.currentTime.toFixed(2) + 's'); };
   }
   // un suono muto fatto partire dentro il tocco sblocca l'audio anche nei
   // browser piu' severi
@@ -2058,8 +2067,15 @@ function ensureCtx(){
     var b = actx.createBuffer(1, 1, actx.sampleRate), s = actx.createBufferSource();
     s.buffer = b; s.connect(actx.destination); s.start(0);
   } catch (e) {}
-  return actx.state === 'suspended' ? actx.resume() : Promise.resolve();
+  if (actx.state !== 'suspended') return Promise.resolve();
+  // resume() che non si risolve mai (succede) non deve bloccare l'avvio
+  return Promise.race([
+    actx.resume().catch(function(e){ ui('audio resume rifiutato: ' + e); }),
+    new Promise(function(ok){ setTimeout(ok, 1500); })
+  ]);
 }
+// diagnostica audio, mostrata in alto e mandata al log del server
+var aDiag = {ctx: '-', kb: 0, blk: 0, err: 0, sched: 0, firstData: false, firstSched: false};
 // audio che dovrebbe suonare ma il browser lo tiene spento: si riaccende al
 // primo tocco sullo schermo (riaccenderlo fuori da un tocco puo' non funzionare)
 function audioShouldRun(){
@@ -2067,7 +2083,7 @@ function audioShouldRun(){
 }
 ['pointerdown', 'touchend', 'click'].forEach(function(evn){
   document.addEventListener(evn, function(){
-    if (audioShouldRun()) { actx.resume(); ui('audio riacceso dal tocco'); }
+    if (audioShouldRun()) { actx.resume(); ui('audio riacceso dal tocco (' + evn + ')'); }
   }, true);
 });
 var audioHold = [];
@@ -2200,16 +2216,21 @@ function playAudioStream(url){
     audioNext = actx.currentTime + 0.25;
     return fetch(url, {signal: ctrl.signal});
   }).then(ck).then(function(res){
-    if (!res.ok) { armVideo(); return; }
+    if (!res.ok) { ui('audio: stream mp3 rifiutato (' + res.status + ')'); armVideo(); return; }
+    aDiag.kb = 0; aDiag.blk = 0; aDiag.err = 0; aDiag.sched = 0; aDiag.firstData = false; aDiag.firstSched = false;
     var reader = res.body.getReader();
     var st = mp3Chunker();
     function decodeBlk(blk){
       var b = blk.bytes;
       return actx.decodeAudioData(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)).then(function(buf){
         if (ctrl.signal.aborted || my !== gen) return;
+        aDiag.blk++;
         var t = mp3Trim(actx, buf, blk.dropHead, blk.dropTail);
         if (t) scheduleBuf(t);
-      }).catch(function(){});
+      }).catch(function(e){
+        aDiag.err++;
+        if (aDiag.err <= 2) ui('audio: decodifica fallita (' + (e && e.message ? e.message : e) + ')');
+      });
     }
     // decodifica in ordine tutti i blocchi pronti
     function drain(chunk, last){
@@ -2227,6 +2248,8 @@ function playAudioStream(url){
       return reader.read().then(function(r){
         if (ctrl.signal.aborted || my !== gen) return;
         if (r.done) return drain(null, true);
+        aDiag.kb += r.value.length / 1024;
+        if (!aDiag.firstData) { aDiag.firstData = true; ui('audio: primi dati mp3, contesto ' + actx.state); }
         return drain(r.value, false).then(read);
       });
     }
@@ -3881,7 +3904,7 @@ class Handler(BaseHTTPRequestHandler):
         hdr = self.headers.get("Cookie")
         who = who_is(hdr)
         page = path in HTML_PATHS or not path.startswith(("/stream", "/ctrl", "/buf", "/status", "/dur",
-                                                           "/prime", "/ready", "/bye", "/next", "/h264"))
+                                                           "/prime", "/ready", "/bye", "/next", "/h264", "/clog"))
         if not who:
             if page:
                 self.redirect("/login")
@@ -3915,7 +3938,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _get(self, u, q, path):
-        if path not in ("/buf", "/status", "/dur", "/prime", "/ready"):
+        if path not in ("/buf", "/status", "/dur", "/prime", "/ready", "/clog"):
             print("GET", path, flush=True)
 
         if path == "/home":
@@ -4294,6 +4317,15 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.wfile.write(msg.encode())
             return
 
+        if path == "/clog":
+            # righe di diagnosi del player (stato audio ecc.), nel log del server
+            m = (parse_qs(u.query).get("m") or [""])[0]
+            m = re.sub(r"[\x00-\x1f]", " ", m)[:200]
+            if m:
+                print("player:", m, flush=True)
+            self.send_response(204)
+            self.end_headers()
+            return
         if path == "/bye":
             arm_stop("pagina chiusa")
             self.send_response(204)
