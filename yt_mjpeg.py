@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "13.9"
+VERSION = "14.0"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1716,7 +1716,7 @@ function pollRate(){
     var hud = document.getElementById('hud');
     if (hud) {
       var desync = '';
-      if (actx && syncOrigin && drawnT > 0) {
+      if (actx && audioArm && drawnT > 0) {
         var ear = earTime();
         var diff = ear - drawnT;
         if (Math.abs(diff) > 0.15) desync = (diff > 0 ? '  audio avanti ' : '  video avanti ') + Math.abs(diff).toFixed(1) + 's';
@@ -1917,7 +1917,7 @@ function flushHeldAudio(){
   for (var i = 0; i < pending.length; i++) scheduleBuf(pending[i]);
 }
 function earTime(){
-  if (!actx || !syncOrigin) return drawnT;
+  if (!actx || !audioArm) return drawnT;
   return actx.currentTime - syncOrigin;
 }
 function holdEar(){
@@ -1933,7 +1933,7 @@ function holdEar(){
   return ear;
 }
 function audioMustWait(){
-  if (!actx || !audioOn || !syncOrigin || !audioArm) return false;
+  if (!actx || !audioOn || !audioArm) return false;
   flushHeldAudio();
   if (audioCursor + 0.2 < drawnT) return true;
   return false;
@@ -1964,7 +1964,7 @@ function showVideo(){
       showStatus('buffer ' + frames.length + ', carico');
       return;
     }
-    if (actx && syncOrigin && audioOn && !userPaused) {
+    if (actx && audioArm && audioOn && !userPaused) {
       var ear = earTime();
       if (ear > drawnT + 0.5 && frames.length > FPS * 2) {
         overlay.style.display = 'flex';
@@ -2033,7 +2033,7 @@ function showVideo(){
     }).catch(function(){ painting = false; });
   }, 1000 / FPS);
   syncOrigin = actx ? actx.currentTime : 0;
-  audioArm = syncOrigin;
+  audioArm = true;
   audioCursor = 0;
   playOrigin = performance.now();
   flushHeldAudio();
@@ -2052,8 +2052,24 @@ function ensureCtx(){
     var AC = window.AudioContext || window.webkitAudioContext;
     try { actx = new AC({sampleRate: 48000}); } catch (e) { actx = new AC(); }
   }
+  // un suono muto fatto partire dentro il tocco sblocca l'audio anche nei
+  // browser piu' severi
+  try {
+    var b = actx.createBuffer(1, 1, actx.sampleRate), s = actx.createBufferSource();
+    s.buffer = b; s.connect(actx.destination); s.start(0);
+  } catch (e) {}
   return actx.state === 'suspended' ? actx.resume() : Promise.resolve();
 }
+// audio che dovrebbe suonare ma il browser lo tiene spento: si riaccende al
+// primo tocco sullo schermo (riaccenderlo fuori da un tocco puo' non funzionare)
+function audioShouldRun(){
+  return actx && audioOn && audioArm && playTimer && !userPaused && !stalled && actx.state === 'suspended';
+}
+['pointerdown', 'touchend', 'click'].forEach(function(evn){
+  document.addEventListener(evn, function(){
+    if (audioShouldRun()) { actx.resume(); ui('audio riacceso dal tocco'); }
+  }, true);
+});
 var audioHold = [];
 var audioSources = [];
 var audioArm = null;
@@ -2404,6 +2420,17 @@ function hInitGL(){
   hScale = [gl.getUniformLocation(pr, 'sy'), gl.getUniformLocation(pr, 'sc')];
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 }
+function hDrawPlanes(f){
+  var gl = hGL, w = f.w, h = f.h, ch = (h + 1) >> 1;
+  if (hCanvas.width !== w || hCanvas.height !== h) { hCanvas.width = w; hCanvas.height = h; gl.viewport(0, 0, w, h); }
+  var planes = [[f.y, f.ly, h], [f.u, f.lu, ch], [f.v, f.lv, ch]];
+  for (var i = 0; i < 3; i++) {
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, planes[i][1], planes[i][2], 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, planes[i][0]);
+  }
+  gl.uniform2f(hScale[0], w / f.ly, 1); gl.uniform2f(hScale[1], ((w + 1) >> 1) / f.lu, 1);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
 function hDraw(y, u, v, ly, lu, lv, w, h){
   if (!hGLtried) hInitGL();
   if (hGL) {
@@ -2433,7 +2460,7 @@ function hNew(X){
     gen: gen, X: X, pk: [], lastPts: -1, outPts: -1e9, shownPts: -1e9, dur: 1 / 30,
     target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
     late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
-    fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0
+    fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0, q: [], clk: null
   };
   hOnFrame = function(y, u, v, ly, lu, lv, w, h, pts){
     if (!hs) return;
@@ -2443,12 +2470,37 @@ function hNew(X){
     if (pts < hs.X - hs.dur / 2) return;            // prima del punto di partenza
     if (pts <= hs.shownPts + 0.001) return;          // gia' mostrato (ffmpeg ripartito)
     if (hs.started && pts + hs.dur <= hs.target) { hs.late++; return; }  // e' gia' dovuto il successivo
+    if (hs.started && hGL) {
+      // si copia il frame e lo si mostra al momento giusto, al refresh dello schermo
+      var ch = (h + 1) >> 1, buf = hMem.buffer;
+      hs.q.push({pts: pts, w: w, h: h, ly: ly, lu: lu, lv: lv,
+        y: new Uint8Array(buf, y, ly * h).slice(), u: new Uint8Array(buf, u, lu * ch).slice(),
+        v: new Uint8Array(buf, v, lv * ch).slice()});
+      return;
+    }
     hDraw(y, u, v, ly, lu, lv, w, h);
-    hs.shownPts = pts;
-    hs.drawn++;
-    drawnT = Math.max(0, pts - hs.X);
-    pos = pts;
+    hShown(pts);
   };
+}
+function hShown(pts){
+  hs.shownPts = pts;
+  hs.drawn++;
+  drawnT = Math.max(0, pts - hs.X);
+  pos = pts;
+}
+// al refresh dello schermo: il frame piu' recente gia' dovuto
+function hPresent(me){
+  if (!hs || hs !== me) return;
+  requestAnimationFrame(function(){ hPresent(me); });
+  if (!hs.started || !hs.q.length || userPaused) return;
+  var T = hClock(), f = null;
+  while (hs.q.length && hs.q[0].pts <= T + 0.008) {
+    if (f) hs.late++;
+    f = hs.q.shift();
+  }
+  if (!f) return;
+  hDrawPlanes(f);
+  hShown(f.pts);
 }
 function hStop(){
   if (!hs) return;
@@ -2500,10 +2552,29 @@ function hDecodeNext(){
   return false;
 }
 // momento del video che deve essere sullo schermo adesso
-function hClock(){
-  if (!hs.started || userPaused || stalled) return hs.X + drawnT;
+function hRawClock(){
   if (actx && audioOn && audioArm && actx.state !== 'closed') return hs.X + (actx.currentTime - syncOrigin);
   return hs.X + (performance.now() - playOrigin) / 1000;
+}
+// L'orologio dell'audio avanza a scatti (blocchi di 10-40 ms in alcuni browser):
+// usato direttamente, i frame uscivano a intervalli irregolari e il video
+// sembrava meno fluido dei suoi fps. Qui si segue performance.now() e lo si
+// corregge piano verso l'audio; se l'audio si ferma (pausa, stallo) ci si ferma.
+function hClock(){
+  if (!hs.started || userPaused || stalled) { hs.clk = null; return hs.X + drawnT; }
+  var raw = hRawClock(), now = performance.now();
+  var c = hs.clk;
+  if (!c || (actx && audioOn && audioArm && actx.state !== 'running')) {
+    hs.clk = c = {raw: raw, rawAt: now, t: raw, at: now};
+    return raw;
+  }
+  if (raw !== c.raw) { c.raw = raw; c.rawAt = now; }
+  else if (now - c.rawAt > 150) { c.at = now; return c.t; }   // audio fermo: niente corsa in avanti
+  var t = c.t + (now - c.at) / 1000;
+  var err = raw - t;
+  if (Math.abs(err) > 0.12) t = raw; else t += err * 0.08;
+  c.t = t; c.at = now;
+  return t;
 }
 function hAhead(){ return hs.lastPts - Math.max(hs.X, hs.shownPts); }
 
@@ -2527,11 +2598,13 @@ function showVideoH(){
   startClock();
   draw();
   if (playTimer) clearInterval(playTimer);
-  playTimer = setInterval(hTick, 15);
+  playTimer = setInterval(hTick, 10);
+  var me = hs;
+  requestAnimationFrame(function(){ hPresent(me); });
   // l'MP3 parte esattamente da X: orologio audio = X adesso. Il primo frame
   // (pts >= X - mezzo frame) e' gia' sullo schermo, gli altri seguono l'audio.
   syncOrigin = actx ? actx.currentTime : 0;
-  audioArm = syncOrigin;
+  audioArm = true;
   audioCursor = 0;
   playOrigin = performance.now();
   flushHeldAudio();
@@ -2570,9 +2643,19 @@ function hWatch(T){
     ui('video fermo (audio ' + (actx ? actx.state : 'assente') + '): tocca per ripartire');
     overlay.style.display = 'flex';
     msg.style.display = 'block';
-    msg.textContent = 'Tocca \u25B6 per avviare';
+    msg.textContent = 'Tocca lo schermo per avviare';
     go.style.display = 'block';
   }
+}
+// un tocco sullo schermo mentre si aspetta: si riaccende l'audio e si riparte
+// da dove si era (audio e video erano fermi insieme, restano allineati)
+function hTapResume(){
+  if (!hs || !hs.askedTap) return false;
+  hs.askedTap = false; hs.frozenAt = 0; hs.resumeTried = false;
+  overlay.style.display = 'none';
+  go.style.display = 'none';
+  if (actx && actx.state !== 'running') actx.resume();
+  return true;
 }
 function hTick(){
   if (!hs || hs.gen !== gen) return;
@@ -2606,10 +2689,16 @@ function hTick(){
   hs.target = T;
   hFps();
   var until = performance.now() + 25;
-  while (hs.outPts + hs.dur <= T + hs.dur * 0.5 && performance.now() < until) {
-    if (!hDecodeNext()) break;
+  if (hGL) {
+    while (hs.q.length < 3 && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
+      if (!hDecodeNext()) break;
+    }
+  } else {
+    while (hs.outPts + hs.dur <= T + hs.dur * 0.5 && performance.now() < until) {
+      if (!hDecodeNext()) break;
+    }
   }
-  if (hs.ended && hs.flushed && !hs.pk.length && T > hs.outPts + hs.dur) { hFinish(); return; }
+  if (hs.ended && hs.flushed && !hs.pk.length && !hs.q.length && T > hs.outPts + hs.dur) { hFinish(); return; }
   hWatch(T);
 }
 
@@ -2742,12 +2831,14 @@ function beginAt(sec){
   });
 }
 go.onclick = function(){
+  if (hTapResume()) { ensureCtx(); return; }
   ensureCtx().then(function(){ beginAt(pos); });
 };
 mjCanvas.onclick = stageClick;
 hCanvas.onclick = stageClick;
 overlay.onclick = function(ev){
   if (ev.target === go) return;
+  if (hTapResume()) { ensureCtx(); return; }
   stageClick(ev);
 };
 var cfgNow = __CFG__;

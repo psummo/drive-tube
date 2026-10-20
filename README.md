@@ -171,7 +171,7 @@ The gear icon (top left) opens the settings: video format (H.264 or MJPEG), reso
 
 Tapping the video shows the suggestions, the home button and a pause button in the middle; they hide after 5 seconds. While paused they stay visible.
 
-The line at the top of the screen shows, in H.264 mode, how many seconds are buffered and the live frame rate: `28 fps (video 30)` means 28 frames shown in the last second out of the 30 the video has; `saltati N` (skipped) counts frames dropped because the decoder fell behind. If the video ever stays frozen after pressing play (the browser kept the audio switched off), the player notices after a few seconds and asks for a tap to restart from the same point.
+The line at the top of the screen shows, in H.264 mode, how many seconds are buffered and the live frame rate: `28 fps (video 30)` means 28 frames shown in the last second out of the 30 the video has; `saltati N` (skipped) counts frames dropped because the decoder fell behind. Frames are decoded a little ahead and shown on the screen refresh, following a smoothed copy of the audio clock, so they come out at even intervals. If the browser keeps the audio switched off (some only allow it after a tap), the player notices within a few seconds and asks for a tap on the screen, then carries on from the same point with sound.
 
 ## Updates
 - **From the admin page**, *Server* section: the update button compares the version with `main`; installing downloads the file, checks its syntax, keeps a backup in `yt_mjpeg.py.bak` and restarts the server.
