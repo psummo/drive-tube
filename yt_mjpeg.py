@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.1"
+VERSION = "14.3"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1501,6 +1501,16 @@ def start_ff():
     # finito) non deve svuotare le code ne' rilanciare ffmpeg
     gen = state["gen"]
     if state.get("ff_gen") == gen:
+        # un'altra richiesta (di solito /stream.h264) sta gia' avviando ffmpeg e
+        # durante yt-dlp ha lasciato il lock: si aspetta che abbia finito. Prima
+        # si tornava subito e /stream.mp3 rispondeva "no audio": al primo video
+        # di ogni sessione si vedeva l'immagine senza suono
+        t0 = time.time()
+        while (state.get("ff_started") != gen and state.get("ff_gen") == gen
+               and state["gen"] == gen and time.time() - t0 < 90):
+            lock.release()
+            time.sleep(0.05)
+            lock.acquire()
         return
     stop_ff()
     state["ff_gen"] = gen
@@ -1526,6 +1536,7 @@ def start_ff():
     state["paused"] = False
     state["err"] = ""
     spawn_ff(gen, pos, vsrc, asrc)
+    state["ff_started"] = gen
 
 
 def new_session(pos=None, vmode=None):
@@ -2214,8 +2225,10 @@ function playAudioStream(url){
   }
   return ensureCtx().then(function(){
     audioNext = actx.currentTime + 0.25;
+    ui('audio: chiedo lo stream, contesto ' + actx.state);
     return fetch(url, {signal: ctrl.signal});
   }).then(ck).then(function(res){
+    ui('audio: risposta ' + res.status + ' ' + (res.headers.get('Content-Type') || '') + (res.body ? '' : ' (senza body)'));
     if (!res.ok) { ui('audio: stream mp3 rifiutato (' + res.status + ')'); armVideo(); return; }
     aDiag.kb = 0; aDiag.blk = 0; aDiag.err = 0; aDiag.sched = 0; aDiag.firstData = false; aDiag.firstSched = false;
     var reader = res.body.getReader();
@@ -2254,7 +2267,9 @@ function playAudioStream(url){
       });
     }
     return read();
-  }).catch(function(){});
+  }).catch(function(e){
+    if (!ctrl.signal.aborted && my === gen) ui('audio: stream interrotto (' + (e && e.message ? e.message : e) + ', ' + aDiag.kb.toFixed(0) + ' KB)');
+  });
 }
 function startBoth(){
   stopWarm();
@@ -2483,7 +2498,8 @@ function hNew(X){
     gen: gen, X: X, pk: [], lastPts: -1, outPts: -1e9, shownPts: -1e9, dur: 1 / 30,
     target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
     late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
-    fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0, q: [], clk: null
+    fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0, q: [], clk: null,
+    startedAt: 0, audioRetry: 0
   };
   hOnFrame = function(y, u, v, ly, lu, lv, w, h, pts){
     if (!hs) return;
@@ -2576,7 +2592,9 @@ function hDecodeNext(){
 }
 // momento del video che deve essere sullo schermo adesso
 function hRawClock(){
-  if (actx && audioOn && audioArm && actx.state !== 'closed') return hs.X + (actx.currentTime - syncOrigin);
+  // l'orologio dell'audio vale solo se l'audio e' davvero in programma: senza
+  // dati audio (stream che non arriva) il video va per conto suo
+  if (actx && audioOn && audioArm && actx.state !== 'closed' && aDiag.sched > 0) return hs.X + (actx.currentTime - syncOrigin);
   return hs.X + (performance.now() - playOrigin) / 1000;
 }
 // L'orologio dell'audio avanza a scatti (blocchi di 10-40 ms in alcuni browser):
@@ -2587,7 +2605,7 @@ function hClock(){
   if (!hs.started || userPaused || stalled) { hs.clk = null; return hs.X + drawnT; }
   var raw = hRawClock(), now = performance.now();
   var c = hs.clk;
-  if (!c || (actx && audioOn && audioArm && actx.state !== 'running')) {
+  if (!c || (actx && audioOn && audioArm && aDiag.sched > 0 && actx.state !== 'running')) {
     hs.clk = c = {raw: raw, rawAt: now, t: raw, at: now};
     return raw;
   }
@@ -2616,6 +2634,7 @@ function showVideoH(){
   overlay.style.display = 'none';
   stalled = false;
   hs.started = true;
+  hs.startedAt = performance.now();
   drawnT = Math.max(0, hs.shownPts - hs.X);
   pos = hs.X + drawnT;
   startClock();
@@ -2641,6 +2660,21 @@ function hFinish(){
   showNext(true);
 }
 // fotogrammi mostrati nell'ultimo secondo e fps del video originale
+// l'audio non arriva (0 byte dopo qualche secondo di video): si ricollega lo
+// stream mp3 senza toccare l'orologio; i blocchi gia' passati vengono saltati
+function hAudioWatch(){
+  if (!audioOn || !actx || aDiag.kb > 0 || !hs.startedAt) return;
+  if (performance.now() - hs.startedAt < 4000 * (hs.audioRetry + 1)) return;
+  if (hs.audioRetry >= 3) return;
+  hs.audioRetry++;
+  ui('audio: nessun dato dopo ' + Math.round((performance.now() - hs.startedAt) / 1000) + 's, ricollego (' + hs.audioRetry + ')');
+  var keepOrigin = syncOrigin;
+  audioUrl = '/stream.mp3?t=' + Date.now() + '&r=' + hs.audioRetry;
+  playAudioStream(audioUrl);
+  syncOrigin = keepOrigin;
+  audioArm = true;
+  audioCursor = 0;
+}
 function hFps(){
   var now = performance.now();
   if (!hs.fpsAt) { hs.fpsAt = now; hs.fpsDrawn = hs.drawn; hs.fpsLate = hs.late; return; }
@@ -2661,8 +2695,9 @@ function hWatch(T){
     hs.resumeTried = true;
     actx.resume();
   }
-  if (f > 3500 && !hs.askedTap) {
+  if (f > 3500 && !hs.askedTap && !hs.tapShown && actx && actx.state !== 'running') {
     hs.askedTap = true;
+    hs.tapShown = true;
     ui('video fermo (audio ' + (actx ? actx.state : 'assente') + '): tocca per ripartire');
     overlay.style.display = 'flex';
     msg.style.display = 'block';
@@ -2711,6 +2746,7 @@ function hTick(){
   var T = hClock();
   hs.target = T;
   hFps();
+  hAudioWatch();
   var until = performance.now() + 25;
   if (hGL) {
     while (hs.q.length < 3 && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
@@ -4341,25 +4377,36 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 self.send_error(500, str(e))
                 return
             if not state["has_audio"]:
+                print("stream audio rifiutato: ffmpeg non avviato", flush=True)
                 self.send_error(404, "no audio")
                 return
+            # un nuovo collegamento audio (anche un ricollegamento del player)
+            # annulla lo spegnimento programmato dalla chiusura del precedente
+            cancel_stop()
             self.send_response(200)
             self.send_header("Content-Type", "audio/mpeg")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             gen = state["gen"]
+            sent = 0
+            print("audio: player collegato (in coda %d KB)" % (sum(len(c) for c in list(state["a_q"])) // 1024), flush=True)
             try:
                 while state["gen"] == gen:
                     if client_gone(self):
+                        print("audio: player scollegato dopo %d KB" % (sent // 1024), flush=True)
                         arm_stop("audio client chiuso")
                         return
                     if state["a_q"]:
-                        self.wfile.write(state["a_q"].popleft())
+                        c = state["a_q"].popleft()
+                        self.wfile.write(c)
+                        sent += len(c)
                     elif state.get("ff_done") == gen:
+                        print("audio: fine, inviati %d KB" % (sent // 1024), flush=True)
                         return
                     else:
                         time.sleep(0.02)
             except (BrokenPipeError, ConnectionResetError, OSError):
+                print("audio: connessione persa dopo %d KB" % (sent // 1024), flush=True)
                 arm_stop("audio client via")
             return
 
@@ -4375,6 +4422,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 print("video h264 err", e, flush=True)
                 self.send_error(500, str(e))
                 return
+            cancel_stop()
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Cache-Control", "no-cache")
