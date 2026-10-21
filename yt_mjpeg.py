@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.3"
+VERSION = "14.4"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -2509,7 +2509,7 @@ function hNew(X){
     target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
     late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
     fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0, q: [], clk: null,
-    startedAt: 0, audioRetry: 0
+    startedAt: 0, audioRetry: 0, drewAt: 0
   };
   hOnFrame = function(y, u, v, ly, lu, lv, w, h, pts){
     if (!hs) return;
@@ -2537,11 +2537,12 @@ function hShown(pts){
   drawnT = Math.max(0, pts - hs.X);
   pos = pts;
 }
-// al refresh dello schermo: il frame piu' recente gia' dovuto
-function hPresent(me){
-  if (!hs || hs !== me) return;
-  requestAnimationFrame(function(){ hPresent(me); });
-  if (!hs.started || !hs.q.length || userPaused) return;
+// disegna il frame piu' recente gia' dovuto. Chiamata sia dal refresh dello
+// schermo (requestAnimationFrame, fluido) sia dal timer hTick: se il browser
+// ferma requestAnimationFrame (scheda in secondo piano, schermo che rallenta)
+// il video andrebbe comunque avanti, mentre l'orologio audio continua a correre.
+function hDue(){
+  if (!hs || !hs.started || !hs.q.length || userPaused || stalled) return;
   var T = hClock(), f = null;
   while (hs.q.length && hs.q[0].pts <= T + 0.008) {
     if (f) hs.late++;
@@ -2550,6 +2551,12 @@ function hPresent(me){
   if (!f) return;
   hDrawPlanes(f);
   hShown(f.pts);
+  hs.drewAt = performance.now();
+}
+function hPresent(me){
+  if (!hs || hs !== me) return;
+  requestAnimationFrame(function(){ hPresent(me); });
+  hDue();
 }
 function hStop(){
   if (!hs) return;
@@ -2767,9 +2774,16 @@ function hTick(){
   hs.target = T;
   hFps();
   hAudioWatch();
+  // video molto indietro rispetto all'orologio (p.es. dopo che il browser ha
+  // fermato il refresh): butta i frame vecchi in coda e rincorri, senza restare
+  // bloccato sul limite di 3 frame pronti
+  if (hGL && hs.q.length && T - hs.q[0].pts > 1.5) {
+    hs.late += hs.q.length; hs.q.length = 0;
+  }
   var until = performance.now() + 25;
   if (hGL) {
-    while (hs.q.length < 3 && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
+    var cap = (hs.shownPts >= 0 && T - hs.shownPts > 1.5) ? 60 : 3;
+    while (hs.q.length < cap && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
       if (!hDecodeNext()) break;
     }
   } else {
@@ -2777,6 +2791,10 @@ function hTick(){
       if (!hDecodeNext()) break;
     }
   }
+  // se requestAnimationFrame non disegna da oltre 50 ms (scheda in secondo
+  // piano, schermo lento), ci pensa il timer: il video non resta mai fermo
+  // mentre l'audio corre
+  if (performance.now() - (hs.drewAt || 0) > 50) hDue();
   if (hs.ended && hs.flushed && !hs.pk.length && !hs.q.length && T > hs.outPts + hs.dur) { hFinish(); return; }
   hWatch(T);
 }
