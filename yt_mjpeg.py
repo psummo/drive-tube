@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.8"
+VERSION = "14.9"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -698,6 +698,7 @@ def set_page(url):
     cur().url = url
     state['duration'] = 0
     state['seek_base'] = 0.0
+    state['is_live'] = False
     sthread(fetch_duration).start()
     new_session(0)
 
@@ -871,6 +872,7 @@ def new_state():
         "a_read": 0,
         "fails": 0,
         "rate": 0,
+        "is_live": False,
     }
 
 
@@ -1054,15 +1056,22 @@ def fetch_duration():
     if state["duration"] or not url:
         return
     p = subprocess.run(
-        yt_cmd("--print", "duration", "--no-playlist", url),
+        yt_cmd("--print", "%(duration)s\t%(is_live)s", "--no-playlist", url),
         text=True,
         capture_output=True,
     )
     if cur().url != url:
         return  # nel frattempo e' stato aperto un altro video
     for line in reversed(p.stdout.splitlines()):
+        parts = line.strip().split("\t")
+        dur_s = parts[0] if parts else ""
+        live_s = parts[1].strip().lower() if len(parts) > 1 else ""
+        if live_s in ("true", "1"):
+            state["is_live"] = True
+            print("live stream rilevato", flush=True)
+            return
         try:
-            state["duration"] = int(float(line.strip()))
+            state["duration"] = int(float(dur_s))
             print("duration", state["duration"], flush=True)
             return
         except ValueError:
@@ -1468,7 +1477,8 @@ def watch_ff(gen, p, pos, threads, tail):
         apos = pos + state["a_read"] * 8.0 / (C("AUDIO_KBPS") * 1000)
         dur = state["duration"] or 0
         rc = p.returncode
-        if rc == 0 and (not dur or made >= dur - 3 or (state["v_made"] == 0 and pos >= dur - 30)):
+        is_live = state.get("is_live")
+        if rc == 0 and not is_live and (not dur or made >= dur - 3 or (state["v_made"] == 0 and pos >= dur - 30)):
             state["ff_done"] = gen
             print("ffmpeg finito a %.0fs" % made, flush=True)
             return
@@ -1643,6 +1653,7 @@ HTML = """<!doctype html>
 var DURATION = __DUR__;
 var FPS = __FPS__;
 var VID = 'WATCHID';
+var IS_LIVE = __LIVE__ === 1;
 var BUF_SEC = 15;
 var BUF_CAP = 6000;
 var rateMb = 0;
@@ -1758,15 +1769,22 @@ function fmt(s){
   return m + ':' + (r<10?'0':'') + r;
 }
 function draw(){
+  if (IS_LIVE) {
+    document.getElementById('prog').style.display = 'none';
+    document.getElementById('time').textContent = '\\u25cf LIVE';
+    document.getElementById('time').style.color = '#f00';
+    return;
+  }
   var p = DURATION ? Math.min(100, (pos/DURATION)*100) : 0;
   document.getElementById('fill').style.width = p + '%';
   document.getElementById('time').textContent = fmt(pos) + ' / ' + fmt(DURATION);
 }
 function pollDur(){
-  if (DURATION) return;
+  if (DURATION || IS_LIVE) return;
   fetch('/dur').then(function(r){ return r.text(); }).then(function(t){
     var d = parseInt(t, 10) || 0;
-    if (d > 0) { DURATION = d; draw(); }
+    if (d === -1) { IS_LIVE = true; draw(); }
+    else if (d > 0) { DURATION = d; draw(); }
     else setTimeout(pollDur, 1500);
   }).catch(function(){ setTimeout(pollDur, 3000); });
 }
@@ -1776,9 +1794,9 @@ function startClock(){
   if (tick) clearInterval(tick);
   tick = setInterval(function(){
     if (!playing) return;
-    if (DURATION && pos > DURATION) pos = DURATION;
+    if (!IS_LIVE && DURATION && pos > DURATION) pos = DURATION;
     draw();
-    history.replaceState(null, '', '/?watch=' + VID + '&t=' + Math.floor(pos));
+    if (!IS_LIVE) history.replaceState(null, '', '/?watch=' + VID + '&t=' + Math.floor(pos));
   }, 1000);
 }
 function stopClock(){ playing = false; }
@@ -3018,7 +3036,7 @@ document.getElementById('menu').addEventListener('click', function(ev){
   if (open) drawCfg();
 }, true);
 function seekAt(ev){
-  if (!DURATION) return;
+  if (!DURATION || IS_LIVE) return;
   var x = ev.clientX;
   if (ev.changedTouches && ev.changedTouches[0]) x = ev.changedTouches[0].clientX;
   var r = document.getElementById('prog').getBoundingClientRect();
@@ -4047,7 +4065,7 @@ class Handler(BaseHTTPRequestHandler):
             for query in recent:
                 if query == q or query in shown_q:
                     continue
-                if len(shown_q) >= 3:
+                if len(shown_q) >= 6:
                     break
                 shown_q.append(query)
             all_queries = ([q] if q else []) + shown_q
@@ -4055,10 +4073,12 @@ class Handler(BaseHTTPRequestHandler):
             # nella sessione di chi chiede
             mine = use_cookies()
             show_personal = mine and home_feed() == "personal"
-            with ThreadPoolExecutor(max_workers=6) as pool:
+            with ThreadPoolExecutor(max_workers=8) as pool:
                 search_futures = {query: pool.submit(in_session(search_yt), query) for query in all_queries}
                 related_future = pool.submit(in_session(related_of), here) if here else None
                 account_future = pool.submit(in_session(account_sections)) if show_personal else None
+            # raccogli canali dai risultati di ricerca per caricare i loro video
+            found_channels = []  # (cid, name)
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
                 for vid, title, kind, url in search_futures[q].result():
@@ -4067,14 +4087,20 @@ class Handler(BaseHTTPRequestHandler):
                             '<a class="card" href="/channel?id=%s"><span>Canale: %s</span></a>'
                             % (vid, title.replace("<", ""))
                         )
+                        found_channels.append((url or vid, title))
                     else:
                         items.extend(cards([(vid, title)], seen, here))
             for query in shown_q:
                 items.append("<h2>%s</h2>" % query.replace("<", ""))
                 for vid, title, kind, url in search_futures[query].result():
                     if kind == "channel":
-                        continue
-                    items.extend(cards([(vid, title)], seen, here))
+                        items.append(
+                            '<a class="card" href="/channel?id=%s"><span>Canale: %s</span></a>'
+                            % (vid, title.replace("<", ""))
+                        )
+                        found_channels.append((url or vid, title))
+                    else:
+                        items.extend(cards([(vid, title)], seen, here))
             if here and related_future:
                 items.append("<h2>Suggeriti per questo video</h2>")
                 items.extend(cards(related_future.result(), seen, here))
@@ -4082,6 +4108,21 @@ class Handler(BaseHTTPRequestHandler):
                 if rows:
                     items.append("<h2>%s</h2>" % name)
                     items.extend(cards(rows, seen, here))
+            # carica video dai canali trovati nelle ricerche
+            if found_channels:
+                ch_limit = 4  # massimo canali da espandere
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    ch_futs = []
+                    for cid, cname in found_channels[:ch_limit]:
+                        ch_futs.append((cname, pool.submit(in_session(channel_videos), cid)))
+                    for cname, fut in ch_futs:
+                        try:
+                            ch_rows = fut.result()
+                            if ch_rows:
+                                items.append("<h2>%s</h2>" % cname.replace("<", ""))
+                                items.extend(cards(ch_rows[:12], seen, here))
+                        except Exception:
+                            pass
             chips = "".join(
                 '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
@@ -4225,7 +4266,10 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             self.send_header("Content-Type", "text/plain")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            self.wfile.write(str(int(state["duration"] or 0)).encode())
+            if state.get("is_live"):
+                self.wfile.write(b"-1")
+            else:
+                self.wfile.write(str(int(state["duration"] or 0)).encode())
             return
 
         if path == "/wasmtest":
@@ -4375,7 +4419,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             if cfg_changed or not (ffmpeg_alive() and abs(want - now_pos()) < 8):
                 new_session(want)
             vid = cur().url.split("v=")[-1][:11] if "v=" in cur().url else ""
-            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("WATCHID", vid).encode("utf-8")
+            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("__LIVE__", "1" if state.get("is_live") else "0").replace("WATCHID", vid).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

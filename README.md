@@ -197,5 +197,22 @@ Available after login:
 
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already inside `yt_mjpeg.py` (compressed and base64-encoded, served to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt: it is the source of what is embedded. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
+## Changelog
+
+### 14.9
+- **Home page**: shows up to 6 recent searches (was 3), and loads videos from channels found in search results as extra sections, so the home page is richer even in "related only" mode or without cookies.
+- **Live streams**: detected automatically via yt-dlp; the progress bar and time display are replaced by a red LIVE indicator, seeking is disabled, the URL no longer updates with a timestamp, and ffmpeg reconnects automatically if the stream drops instead of marking it as finished.
+
+### 14.8
+- Search results doubled (16 instead of 8).
+- Admin setting to choose between personal feed (subscriptions/watch later/liked) and related-only mode when cookies are active.
+
+### 14.7
+- MJPEG-only settings (FPS, JPEG quality) are hidden when in H.264 mode.
+- Sidebar simplified: removed the tab bar since there is only one panel.
+
+### 14.6
+- Admin panel: sessions show "in riproduzione" only when ffmpeg is alive or the client was active in the last 30 seconds, not just because a URL was set.
+
 ## License
 drive-tube is open source, released under the [MIT License](LICENSE). The embedded WebAssembly H.264 decoder is built from [FFmpeg](https://ffmpeg.org) n7.1 (LGPL 2.1 or later, configured without GPL parts); `wasm/build.sh` rebuilds it from the official FFmpeg sources.
