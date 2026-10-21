@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.10"
+VERSION = "14.11"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -699,6 +699,7 @@ def set_page(url):
     state['duration'] = 0
     state['seek_base'] = 0.0
     state['is_live'] = False
+    state['title'] = ""
     sthread(fetch_duration).start()
     new_session(0)
 
@@ -928,6 +929,7 @@ def new_state():
         "fails": 0,
         "rate": 0,
         "is_live": False,
+        "title": "",
     }
 
 
@@ -951,7 +953,7 @@ SESSIONS_LOCK = threading.Lock()
 OWNER = {}            # codice -> sid del browser che lo sta usando
 MAX_PER_CODE = 1      # un codice = una sessione: chi lo apre altrove chiude questa
 MAX_SESSIONS = 10     # sessioni in tutto
-IDLE_CLOSE = 3 * 3600  # una sessione ferma da 3 ore viene chiusa
+IDLE_CLOSE = 30 * 60  # una sessione ferma da 30 minuti (senza ffmpeg attivo) viene chiusa
 
 
 def cur():
@@ -1108,10 +1110,10 @@ def next_of_current():
 
 def fetch_duration():
     url = cur().url
-    if state["duration"] or state.get("is_live") or not url:
+    if (state["duration"] or state.get("is_live")) and state.get("title") or not url:
         return
     p = subprocess.run(
-        yt_cmd("--print", "%(duration)s\t%(is_live)s\t%(live_status)s", "--no-playlist", url),
+        yt_cmd("--print", "%(duration)s\t%(is_live)s\t%(live_status)s\t%(title)s", "--no-playlist", url),
         text=True,
         capture_output=True,
     )
@@ -1123,6 +1125,9 @@ def fetch_duration():
         live_s = parts[1].strip().lower() if len(parts) > 1 else ""
         live_status = parts[2].strip().lower() if len(parts) > 2 else ""
         print("fetch_duration raw:", repr(line.strip()), flush=True)
+        ttl = "\t".join(parts[3:]).strip() if len(parts) > 3 else ""
+        if ttl and ttl != "NA":
+            state["title"] = ttl
         if live_s in ("true", "1") or live_status == "is_live":
             state["is_live"] = True
             print("live stream rilevato", flush=True)
@@ -1628,7 +1633,7 @@ def new_session(pos=None, vmode=None):
 HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>yt</title>
+<title>__TITLE__</title>
 <style>
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:sans-serif}
   #screen,#hscreen{width:100%;height:100%;object-fit:contain;background:#000;display:none}
@@ -1846,6 +1851,16 @@ function pollDur(){
   }).catch(function(){ setTimeout(pollDur, 3000); });
 }
 pollDur();
+var titleTries = 0;
+function pollTitle(){
+  if (document.title && document.title !== 'drive-tube') return;
+  if (++titleTries > 20) return;
+  fetch('/title').then(function(r){ return r.text(); }).then(function(t){
+    if (t) document.title = t;
+    else setTimeout(pollTitle, 1500);
+  }).catch(function(){ setTimeout(pollTitle, 3000); });
+}
+pollTitle();
 function startClock(){
   playing = true;
   if (tick) clearInterval(tick);
@@ -4329,6 +4344,14 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 self.wfile.write(str(int(state["duration"] or 0)).encode())
             return
 
+        if path == "/title":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write((state.get("title") or "").encode("utf-8"))
+            return
+
         if path == "/wasmtest":
             body = WASMTEST_HTML.replace("__VER__", VERSION).encode("utf-8")
             self.send_response(200)
@@ -4476,7 +4499,7 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             if cfg_changed or not (ffmpeg_alive() and abs(want - now_pos()) < 8):
                 new_session(want)
             vid = cur().url.split("v=")[-1][:11] if "v=" in cur().url else ""
-            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("__LIVE__", "1" if state.get("is_live") else "0").replace("WATCHID", vid).encode("utf-8")
+            body = HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("__LIVE__", "1" if state.get("is_live") else "0").replace("__TITLE__", html.escape(state.get("title") or "drive-tube")).replace("WATCHID", vid).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
