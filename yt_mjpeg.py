@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.7"
+VERSION = "14.8"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -616,6 +616,12 @@ def cookie_mode():
     return "all" if os.path.isfile(COOKIES) else "off"
 
 
+def home_feed():
+    """'personal' o 'related'. Con personal (default) mostra iscrizioni/watch later/mi piace."""
+    m = ACCESS.get("home_feed")
+    return m if m in ("personal", "related") else "personal"
+
+
 def use_cookies():
     # vale per la sessione legata al thread; senza sessione (richieste admin,
     # prova PO token) niente cookie
@@ -702,7 +708,7 @@ def search_yt(q):
     if hit and time.time() - hit[0] < 600:
         return hit[1]
     p = subprocess.run(
-        yt_cmd('--flat-playlist', '--print', '%(id)s\t%(title)s\t%(channel_id)s\t%(url)s', 'ytsearch8:' + q),
+        yt_cmd('--flat-playlist', '--print', '%(id)s\t%(title)s\t%(channel_id)s\t%(url)s', 'ytsearch16:' + q),
         text=True, capture_output=True,
     )
     rows = []
@@ -3546,6 +3552,11 @@ small{color:#999}
   <button data-ck="admin">solo admin</button>
   <button data-ck="all">tutti</button>
 </div>
+<div class="row" id="feedrow" style="display:none">
+  <span>Home mostra:</span>
+  <button data-feed="personal">iscrizioni e mi piace</button>
+  <button data-feed="related">solo correlati</button>
+</div>
 <form class="row" method="post" action="/admin/cookies" enctype="multipart/form-data">
   <input type="file" name="f" accept=".txt,text/plain" required>
   <button type="submit">Carica cookie (Netscape)</button>
@@ -3796,10 +3807,16 @@ function loadCk(){
       ' · in uso per: ' + names[j.mode] + (j.present || j.mode === 'off' ? '' : ' (ma manca il file)');
     $('ckstate').className = j.present && j.mode !== 'off' ? 'ok' : 'na';
     document.querySelectorAll('[data-ck]').forEach(function(b){ b.className = b.getAttribute('data-ck') === j.mode ? 'go' : ''; });
+    var show = j.present && j.mode !== 'off';
+    $('feedrow').style.display = show ? '' : 'none';
+    document.querySelectorAll('[data-feed]').forEach(function(b){ b.className = b.getAttribute('data-feed') === j.feed ? 'go' : ''; });
   });
 }
 document.querySelectorAll('[data-ck]').forEach(function(b){
   b.onclick = function(){ api('cookies/mode', {mode: b.getAttribute('data-ck')}).then(function(r){ done(r); loadCk(); }); };
+});
+document.querySelectorAll('[data-feed]').forEach(function(b){
+  b.onclick = function(){ api('home_feed/mode', {mode: b.getAttribute('data-feed')}).then(function(r){ done(r); loadCk(); }); };
 });
 $('ckdel').onclick = function(){
   if (!confirm('Cancellare il file dei cookie YouTube dal server?')) return;
@@ -4037,10 +4054,11 @@ class Handler(BaseHTTPRequestHandler):
             # ricerche, suggeriti e (con i cookie) account in parallelo, ognuno
             # nella sessione di chi chiede
             mine = use_cookies()
+            show_personal = mine and home_feed() == "personal"
             with ThreadPoolExecutor(max_workers=6) as pool:
                 search_futures = {query: pool.submit(in_session(search_yt), query) for query in all_queries}
                 related_future = pool.submit(in_session(related_of), here) if here else None
-                account_future = pool.submit(in_session(account_sections)) if mine else None
+                account_future = pool.submit(in_session(account_sections)) if show_personal else None
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
                 for vid, title, kind, url in search_futures[q].result():
@@ -4613,7 +4631,8 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
         if path == "/admin/api/cookies":
             st = os.stat(COOKIES) if os.path.isfile(COOKIES) else None
             self.json_out({"present": bool(st), "size": st.st_size if st else 0,
-                           "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode()})
+                           "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode(),
+                           "feed": home_feed()})
             return
         if path == "/admin/api/pot":
             st = pot_status()
@@ -4792,6 +4811,18 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
                 access_save()
             feed_cache.clear()
             _bprint("admin: cookie YouTube per", mode, flush=True)
+            self.json_out({"ok": True})
+            return
+        if what == "home_feed/mode":
+            mode = data.get("mode")
+            if mode not in ("personal", "related"):
+                self.json_out({"ok": False, "error": "scelta non valida"})
+                return
+            with ACCESS_LOCK:
+                ACCESS["home_feed"] = mode
+                access_save()
+            feed_cache.clear()
+            _bprint("admin: home feed", mode, flush=True)
             self.json_out({"ok": True})
             return
         if what == "cookies/delete":
