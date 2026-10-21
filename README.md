@@ -23,6 +23,14 @@ A Linux machine with:
 - `yt-dlp`
 - **Node.js 22 or later** (or Deno): yt-dlp needs a JavaScript runtime for YouTube, and the PO token provider (see below) needs Node 22+. If it's missing, the admin page can download it for you (no sudo needed)
 
+## Easy setup (one script)
+On a fresh Debian/Ubuntu or Fedora/RHEL/Amazon Linux machine, `setup.sh` does everything below for you: system packages (python3, git, ffmpeg), `yt-dlp`, Node.js 22 (user-local, no sudo), Deno, the clone of this repo, the admin password (asked once, stored in `~/.config/drive-tube/env` with mode 600, never in the code) and the systemd service.
+```bash
+curl -fsSL https://raw.githubusercontent.com/psummo/drive-tube/main/setup.sh -o setup.sh
+bash setup.sh
+```
+Then open `http://YOUR-SERVER:8090/admin` (open the port in the firewall) and create your access codes. Running it again updates everything. Prefer to do it by hand? Follow the steps below.
+
 ## Installation
 Install the dependencies with your distribution's package manager:
 
