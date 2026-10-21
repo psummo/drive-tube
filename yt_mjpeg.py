@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.9"
+VERSION = "14.10"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -761,10 +761,61 @@ def flat_rows(url, limit=8, start=1):
     return rows
 
 
+def video_meta(vid):
+    """(titolo, canale) di un video, da usare per cercare contenuti simili."""
+    ck = ("m", vid, use_cookies())
+    hit = feed_cache.get(ck)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    p = subprocess.run(
+        yt_cmd("--print", "%(title)s\t%(channel)s", "--no-playlist",
+               "https://www.youtube.com/watch?v=" + vid),
+        text=True, capture_output=True,
+    )
+    title = chan = ""
+    for line in p.stdout.splitlines():
+        parts = line.split("\t")
+        if parts and parts[0].strip() and parts[0].strip() != "NA":
+            title = parts[0].strip()
+            chan = parts[1].strip() if len(parts) > 1 and parts[1].strip() != "NA" else ""
+            break
+    feed_cache[ck] = (time.time(), (title, chan))
+    return title, chan
+
+
+def videos_from_search(query, exclude=None, limit=12):
+    """Solo i video (niente canali) da una ricerca, escludendo alcuni id."""
+    exclude = exclude or set()
+    rows = []
+    for r in search_yt(query):
+        vid, title = r[0], r[1]
+        kind = r[2] if len(r) > 2 else 'video'
+        if kind == 'video' and vid and vid not in exclude:
+            exclude.add(vid)
+            rows.append((vid, title))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def related_of(vid):
+    # Su IP datacenter YouTube blocca playlist/mix e pagine canale (youtube:tab);
+    # la ricerca invece passa. Cerchiamo video simili dal canale e dal titolo.
     if not vid:
         return []
-    return flat_rows("https://www.youtube.com/playlist?list=RD" + vid, 8)
+    ck = ("r", vid, use_cookies())
+    hit = feed_cache.get(ck)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    title, chan = video_meta(vid)
+    seen = {vid}
+    rows = []
+    for query in ([chan] if chan else []) + ([title] if title else []):
+        rows += videos_from_search(query, seen, 12 - len(rows))
+        if len(rows) >= 12:
+            break
+    feed_cache[ck] = (time.time(), rows)
+    return rows
 
 
 def account_sections():
@@ -807,14 +858,18 @@ def cards(rows, seen, cur):
     return html
 
 
-def channel_videos(cid):
+def channel_videos(cid, name=None):
     if cid.startswith('http'):
         url = cid.rstrip('/') + '/videos'
     elif cid.startswith('@'):
         url = 'https://www.youtube.com/' + cid + '/videos'
     else:
         url = 'https://www.youtube.com/channel/' + cid + '/videos'
-    return flat_rows(url, 24)
+    rows = flat_rows(url, 24)
+    # pagina canale bloccata dall'IP (youtube:tab): ripieghiamo sulla ricerca
+    if not rows and name:
+        rows = videos_from_search(name, None, 12)
+    return rows
 # ================= sessioni =================
 # Ogni browser ha la sua sessione: video, impostazioni, ffmpeg, code e file di
 # scambio. Ogni richiesta HTTP lega la sua sessione al thread che la serve, e
@@ -4116,7 +4171,7 @@ class Handler(BaseHTTPRequestHandler):
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     ch_futs = []
                     for cid, cname in found_channels[:ch_limit]:
-                        ch_futs.append((cname, pool.submit(in_session(channel_videos), cid)))
+                        ch_futs.append((cname, pool.submit(in_session(channel_videos), cid, cname)))
                     for cname, fut in ch_futs:
                         try:
                             ch_rows = fut.result()

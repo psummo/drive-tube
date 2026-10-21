@@ -207,6 +207,10 @@ Available after login:
 
 ## Changelog
 
+### 14.10
+- **Suggestions now work on blocked IPs**: on datacenter IPs (e.g. AWS EC2) YouTube blocks the `youtube:tab` extractor, so playlists, mixes and channel pages fail with "The playlist does not exist", leaving the home page empty. The "suggested for this video" section no longer uses the `RD` mix playlist; it looks up the video's title and channel and finds similar videos through search, which still works. Channel sections on the home page fall back to search when the channel page is blocked.
+- Note: the personal feed (subscriptions / watch later / liked) relies on `youtube:tab` and cannot be fetched from a blocked IP even with cookies. Use a proxy in the admin page's *Rete verso YouTube* section to restore it.
+
 ### 14.9
 - **Home page**: shows up to 6 recent searches (was 3), and loads videos from channels found in search results as extra sections, so the home page is richer even in "related only" mode or without cookies.
 - **Live streams**: detected automatically via yt-dlp; the progress bar and time display are replaced by a red LIVE indicator, seeking is disabled, the URL no longer updates with a timestamp, and ffmpeg reconnects automatically if the stream drops instead of marking it as finished.
