@@ -185,9 +185,17 @@ Available after login:
 - `/test`: which features the browser offers (WebCodecs, WebAssembly, WebGL, image formats).
 - `/wasmtest`: downloads a few seconds of the current video in H.264, measures how many frames per second the browser can decode and plays it in real time.
 
-## WebAssembly decoder
-The H.264 decoder is embedded in `yt_mjpeg.py`. The wrapper source is `wasm/h264dec.c`; `wasm/build.sh` rebuilds it (only clang/lld, cmake, ninja and git are needed) and embeds it back into the file.
+## Repository contents
+| File | What it is for |
+|---|---|
+| `yt_mjpeg.py` | **The whole app**: server, web pages and the embedded decoder. This is the only file you need to run drive-tube. |
+| `README.md` | This guide. |
+| `LICENSE` | MIT license, with the passengers-only notice. |
+| `wasm/h264dec.c` | Source of the H.264 decoder that runs in the browser: a thin C wrapper around FFmpeg's decoder. |
+| `wasm/build.sh` | Script that rebuilds the decoder from FFmpeg's sources and embeds the result back into `yt_mjpeg.py`. |
+| `.github/workflows/release.yml` | Publishes a GitHub release with `yt_mjpeg.py` attached when a `vX.Y` tag is pushed. |
 
+**You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already inside `yt_mjpeg.py` (compressed and base64-encoded, served to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt: it is the source of what is embedded. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## License
 drive-tube is open source, released under the [MIT License](LICENSE). The embedded WebAssembly H.264 decoder is built from [FFmpeg](https://ffmpeg.org) n7.1 (LGPL 2.1 or later, configured without GPL parts); `wasm/build.sh` rebuilds it from the official FFmpeg sources.
