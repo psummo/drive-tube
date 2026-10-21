@@ -1053,10 +1053,10 @@ def next_of_current():
 
 def fetch_duration():
     url = cur().url
-    if state["duration"] or not url:
+    if state["duration"] or state.get("is_live") or not url:
         return
     p = subprocess.run(
-        yt_cmd("--print", "%(duration)s\t%(is_live)s", "--no-playlist", url),
+        yt_cmd("--print", "%(duration)s\t%(is_live)s\t%(live_status)s", "--no-playlist", url),
         text=True,
         capture_output=True,
     )
@@ -1066,7 +1066,9 @@ def fetch_duration():
         parts = line.strip().split("\t")
         dur_s = parts[0] if parts else ""
         live_s = parts[1].strip().lower() if len(parts) > 1 else ""
-        if live_s in ("true", "1"):
+        live_status = parts[2].strip().lower() if len(parts) > 2 else ""
+        print("fetch_duration raw:", repr(line.strip()), flush=True)
+        if live_s in ("true", "1") or live_status == "is_live":
             state["is_live"] = True
             print("live stream rilevato", flush=True)
             return
