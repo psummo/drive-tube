@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.5"
+VERSION = "14.6"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -4610,10 +4610,11 @@ a.back{font-size:18px;padding:8px 14px;color:#fff;background:#222;text-decoratio
             rows = []
             for x in sorted(sess, key=lambda x: -x.seen):
                 ff = x.state.get("ff")
+                ff_alive = bool(ff and ff.poll() is None)
                 rows.append({
                     "sid": x.sid, "who": x.who,
-                    "playing": bool(x.url),
-                    "vmode": x.state.get("vmode"), "ff": bool(ff and ff.poll() is None),
+                    "playing": bool(x.url) and (ff_alive or now - x.seen < 30),
+                    "vmode": x.state.get("vmode"), "ff": ff_alive,
                     "seen": now - x.seen, "err": x.state.get("err") or "",
                 })
             with ACCESS_LOCK:
