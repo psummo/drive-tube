@@ -207,6 +207,10 @@ Available after login:
 
 ## Changelog
 
+### 14.13
+- **403 on the stream**: when YouTube refuses the stream (HTTP 403) the player no longer retries the same rejected URL: it fetches fresh URLs right away and, if the 403 repeats, tries other YouTube clients in turn (`tv`, `web_safari`, `mweb`, `android_vr`). The client that works is kept for the rest of that session and written to the log, so you can save it in the admin page.
+- **Network diagnosis checks the real stream**: *Trova una configurazione che funziona* used to check only that yt-dlp could read the video, which passes even when the stream itself is then refused. It now also downloads the first bytes of the stream, so a combination marked OK actually plays.
+
 ### 14.12
 - **Mixed home**: the search you just made stays on top; everything else (recent searches, suggestions for the current video, channel videos and, with cookies, your personal feed) is now interleaved in a single grid instead of one section per source, so the suggestions land in between the other videos.
 

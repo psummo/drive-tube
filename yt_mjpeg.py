@@ -21,11 +21,12 @@ import sys
 import threading
 import time
 import urllib.request
+import urllib.error
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.12"
+VERSION = "14.13"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -559,8 +560,36 @@ def pot_test(net=None):
             err = re.sub(r"https?://\S+", "<url>", line[6:].strip())
             err = re.sub(r"^\[youtube\] [\w-]+: ", "", err)[:160]
     tokens = any("generating a" in x.lower() and "po token" in x.lower() for x in keep)
-    return {"ok": p.returncode == 0, "token": tokens, "error": err,
+    ok = p.returncode == 0
+    if ok:
+        # --simulate controlla solo l'estrazione: lo stream vero puo' dare 403
+        sok, serr = stream_probe(net)
+        keep.append("stream: " + ("scaricabile" if sok else serr))
+        if not sok:
+            ok, err = False, "stream rifiutato (" + serr + ")"
+    return {"ok": ok, "token": tokens, "error": err,
             "lines": keep[-25:] or ["nessuna riga utile nell'output"]}
+
+
+def stream_probe(net=None):
+    """Prende l'URL dello stream e ne scarica i primi KB, come fara' ffmpeg."""
+    try:
+        p = subprocess.run(
+            yt_cmd("-g", "--no-playlist", "-f", "bv*[vcodec^=avc1][height<=360]/b",
+                   "--user-agent", UA, POT_TEST_VIDEO, net=net),
+            capture_output=True, text=True, timeout=120,
+        )
+        urls = [x for x in p.stdout.splitlines() if x.startswith("http")]
+        if not urls:
+            return False, "nessun URL"
+        req = urllib.request.Request(urls[0], headers={"User-Agent": UA, "Range": "bytes=0-65535"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            r.read(1024)
+        return True, ""
+    except urllib.error.HTTPError as e:
+        return False, "HTTP %d" % e.code
+    except Exception as e:
+        return False, str(e)[:80]
 
 
 def yt_diagnose():
@@ -930,6 +959,7 @@ def new_state():
         "rate": 0,
         "is_live": False,
         "title": "",
+        "net": None,  # client/rete che ha funzionato dopo un 403 (solo questa sessione)
     }
 
 
@@ -1159,7 +1189,10 @@ def ytdlp_format():
     return "bv*[height<=720]+ba/bv*+ba/b"
 
 
-def ytdlp_urls():
+def ytdlp_urls(net=None, quiet=False):
+    # net: rete/client diversi da quelli salvati (ripiego dopo un 403);
+    # quiet: in caso di errore non tocca state["err"] (il client lo leggerebbe
+    # e, per esempio, passerebbe a MJPEG mentre si stanno provando altri client)
     p = subprocess.run(
         yt_cmd(
             "-g",
@@ -1169,6 +1202,7 @@ def ytdlp_urls():
             "-f",
             ytdlp_format(),
             cur().url,
+            net=net,
         ),
         text=True,
         capture_output=True,
@@ -1176,6 +1210,8 @@ def ytdlp_urls():
     if p.returncode != 0:
         err = p.stderr or ""
         print(err, flush=True)
+        if quiet:
+            raise RuntimeError(err.strip().splitlines()[-1][:200] if err.strip() else "yt-dlp fallito")
         if "Sign in to confirm" in err or "not a bot" in err:
             state["err"] = "Verifica anti-bot di YouTube: controlla il PO token nella pagina admin."
         elif state["vmode"] == "h264":
@@ -1186,9 +1222,23 @@ def ytdlp_urls():
         raise RuntimeError(state["err"])
     lines = [x for x in p.stdout.strip().splitlines() if x.startswith("http")]
     if not lines:
+        if quiet:
+            raise RuntimeError("nessuno stream")
         state["err"] = "Nessuno stream: video bloccato o non disponibile."
         raise RuntimeError(state["err"])
     return lines
+
+
+# Client provati in ordine quando YouTube rifiuta lo stream (403) anche con URL
+# appena presi: dagli IP dei server capita che un client venga respinto e un
+# altro no.
+FALLBACK_CLIENTS = ["tv", "web_safari", "mweb", "android_vr"]
+
+
+def net_with_client(client):
+    n = dict(ACCESS.get("yt") or {})
+    n["client"] = client
+    return n
 
 
 def client_gone(handler):
@@ -1558,13 +1608,29 @@ def watch_ff(gen, p, pos, threads, tail):
             return
         urls = state.get("urls")
         state["ff"] = None
+        forbidden = any("403" in line for line in tail)
+        cur_net = state.get("net")
     time.sleep(min(fails, 5) + 0.5)
-    if fails >= 2 or not urls:
-        try:
-            lst = ytdlp_urls()
-        except Exception as e:
-            print("riavvio fallito:", e, flush=True)
+    if forbidden or fails >= 2 or not urls:
+        # 403: lo stesso URL verrebbe rifiutato di nuovo, se ne prendono di
+        # nuovi subito; dal secondo 403 di fila si prova un altro client
+        cands = [(cur_net, False)]
+        if forbidden and fails >= 2:
+            cands = [(net_with_client(c), True) for c in FALLBACK_CLIENTS[fails - 2:]]
+        lst = None
+        for net, alt in cands:
+            try:
+                lst = ytdlp_urls(net, quiet=alt)
+            except Exception as e:
+                print("riavvio fallito%s: %s" % (" con client " + net["client"] if alt else "", e), flush=True)
+                continue
+            if alt:
+                print("403: provo il client %s" % net["client"], flush=True)
+                state["net"] = net
+            break
+        if not lst:
             return
+        state["err"] = ""
         urls = (lst[0], lst[1] if len(lst) > 1 else lst[0])
     with lock:
         if state["gen"] != gen or state["ff"] is not None:
@@ -1595,9 +1661,10 @@ def start_ff():
     state["fails"] = 0
     state["v_maxpts"] = None
     pos = int(now_pos())
+    net = state.get("net")
     lock.release()
     try:
-        urls = ytdlp_urls()
+        urls = ytdlp_urls(net)
     except Exception:
         lock.acquire()
         if state["gen"] == gen:
