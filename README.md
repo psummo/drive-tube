@@ -207,6 +207,9 @@ Available after login:
 
 ## Changelog
 
+### 14.12
+- **Mixed home**: the search you just made stays on top; everything else (recent searches, suggestions for the current video, channel videos and, with cookies, your personal feed) is now interleaved in a single grid instead of one section per source, so the suggestions land in between the other videos.
+
 ### 14.11
 - **Tab title**: the player page now shows the video title as the browser tab title (fetched together with the duration, so it appears a moment after the page loads).
 - **Idle sessions**: a session with no active ffmpeg and no activity is now closed after 30 minutes (was 3 hours), so the admin page no longer lists stale "home" sessions for hours. Settings live in browser cookies and a video can be resumed from its URL, so nothing is lost.

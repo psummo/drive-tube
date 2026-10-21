@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.11"
+VERSION = "14.12"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -4149,7 +4149,9 @@ class Handler(BaseHTTPRequestHandler):
                 search_futures = {query: pool.submit(in_session(search_yt), query) for query in all_queries}
                 related_future = pool.submit(in_session(related_of), here) if here else None
                 account_future = pool.submit(in_session(account_sections)) if show_personal else None
-            # raccogli canali dai risultati di ricerca per caricare i loro video
+            # La ricerca appena fatta resta in cima, a parte. Tutto il resto
+            # (ricerche recenti, suggeriti, canali, account) viene mescolato a
+            # turno, cosi' i suggeriti finiscono in mezzo agli altri video.
             found_channels = []  # (cid, name)
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
@@ -4162,39 +4164,37 @@ class Handler(BaseHTTPRequestHandler):
                         found_channels.append((url or vid, title))
                     else:
                         items.extend(cards([(vid, title)], seen, here))
+            sources = []  # liste di (vid, titolo), da mescolare
+            if here and related_future:
+                sources.append(related_future.result())
             for query in shown_q:
-                items.append("<h2>%s</h2>" % query.replace("<", ""))
+                rows = []
                 for vid, title, kind, url in search_futures[query].result():
                     if kind == "channel":
-                        items.append(
-                            '<a class="card" href="/channel?id=%s"><span>Canale: %s</span></a>'
-                            % (vid, title.replace("<", ""))
-                        )
                         found_channels.append((url or vid, title))
                     else:
-                        items.extend(cards([(vid, title)], seen, here))
-            if here and related_future:
-                items.append("<h2>Suggeriti per questo video</h2>")
-                items.extend(cards(related_future.result(), seen, here))
-            for name, rows in (account_future.result() if account_future else []):
-                if rows:
-                    items.append("<h2>%s</h2>" % name)
-                    items.extend(cards(rows, seen, here))
-            # carica video dai canali trovati nelle ricerche
+                        rows.append((vid, title))
+                sources.append(rows)
             if found_channels:
-                ch_limit = 4  # massimo canali da espandere
                 with ThreadPoolExecutor(max_workers=4) as pool:
-                    ch_futs = []
-                    for cid, cname in found_channels[:ch_limit]:
-                        ch_futs.append((cname, pool.submit(in_session(channel_videos), cid, cname)))
-                    for cname, fut in ch_futs:
-                        try:
-                            ch_rows = fut.result()
-                            if ch_rows:
-                                items.append("<h2>%s</h2>" % cname.replace("<", ""))
-                                items.extend(cards(ch_rows[:12], seen, here))
-                        except Exception:
-                            pass
+                    ch_futs = [pool.submit(in_session(channel_videos), cid, cname)
+                               for cid, cname in found_channels[:4]]
+                for fut in ch_futs:
+                    try:
+                        sources.append(fut.result()[:12])
+                    except Exception:
+                        pass
+            for name, rows in (account_future.result() if account_future else []):
+                sources.append(rows)
+            mixed = []
+            for i in range(max([len(s) for s in sources] or [0])):
+                for s in sources:
+                    if i < len(s):
+                        mixed.append(s[i])
+            if mixed:
+                if q:
+                    items.append("<h2>Per te</h2>")
+                items.extend(cards(mixed, seen, here))
             chips = "".join(
                 '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
