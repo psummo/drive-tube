@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.6"
+VERSION = "14.7"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1586,10 +1586,8 @@ HTML = """<!doctype html>
     pointer-events:none;
   }
   #side.on{transform:translateX(0);pointer-events:auto}
-  #tabs{display:flex;gap:8px;padding:12px}
-  #tabs button{flex:1;height:44px;border:0;border-radius:8px;background:#222;color:#fff;font-size:20px}
-  #tabs button.on{background:#fff;color:#000}
-  #panel{flex:1;overflow:auto;padding:8px 14px 24px}
+  #panel{flex:1;overflow:auto;padding:14px 14px 24px}
+  #panel-title{font-size:22px;font-weight:bold;margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid #333}
   .row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #333}
   .row p{margin:0;flex:1}
   .row b{display:block}
@@ -1631,9 +1629,6 @@ HTML = """<!doctype html>
 <button id="menu" type="button">&#9881;</button>
 <a id="homebtn" href="/home">&#8962;</a>
 <div id="side">
-  <div id="tabs">
-    <button type="button" id="tabcfg" class="on">&#9881;</button>
-  </div>
   <div id="panel"></div>
 </div>
 <div id="log"></div>
@@ -2969,8 +2964,9 @@ function saveCfgCookie(){
 }
 function drawCfg(){
   var box = document.getElementById('panel');
-  box.innerHTML = '';
+  box.innerHTML = '<p id="panel-title">Impostazioni</p>';
   SETTINGS.forEach(function(f){
+    if (vmode === 'h264' && (f.key === 'FPS' || f.key === 'Q')) return;
     var row = document.createElement('div');
     row.className = 'row2';
     row.innerHTML = '<p><b>' + f.label + '</b><small>' + f.help + '</small></p><div class="opts"></div>';
@@ -3007,24 +3003,14 @@ function drawCfg(){
   };
   box.appendChild(reset);
 }
-function openTab(which){
-  document.getElementById('tabcfg').className = which === 'cfg' ? 'on' : '';
-  var box = document.getElementById('panel');
-  if (!cfgNow) {
-    box.textContent = 'config non letta';
-    return;
-  }
-  drawCfg();
-}
 document.getElementById('menu').addEventListener('click', function(ev){
   ev.preventDefault();
   ev.stopPropagation();
   var side = document.getElementById('side');
   var open = side.className.indexOf('on') === -1;
   side.className = open ? 'on' : '';
-  if (open) openTab('cfg');
+  if (open) drawCfg();
 }, true);
-document.getElementById('tabcfg').onclick = function(ev){ ev.stopPropagation(); openTab('cfg'); };
 function seekAt(ev){
   if (!DURATION) return;
   var x = ev.clientX;
