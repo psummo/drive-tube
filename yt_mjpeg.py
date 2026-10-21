@@ -25,7 +25,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.4"
+VERSION = "14.5"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -2509,7 +2509,7 @@ function hNew(X){
     target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
     late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
     fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0, q: [], clk: null,
-    startedAt: 0, audioRetry: 0, drewAt: 0
+    startedAt: 0, audioRetry: 0, drewAt: 0, lagSince: 0, resyncAt: 0
   };
   hOnFrame = function(y, u, v, ly, lu, lv, w, h, pts){
     if (!hs) return;
@@ -2518,13 +2518,14 @@ function hNew(X){
     if (pts > prev && pts - prev > 0.004 && pts - prev < 0.2) hs.dur = pts - prev;
     if (pts < hs.X - hs.dur / 2) return;            // prima del punto di partenza
     if (pts <= hs.shownPts + 0.001) return;          // gia' mostrato (ffmpeg ripartito)
-    if (hs.started && pts + hs.dur <= hs.target) { hs.late++; return; }  // e' gia' dovuto il successivo
     if (hs.started && hGL) {
-      // si copia il frame e lo si mostra al momento giusto, al refresh dello schermo
+      // tutti i frame finiscono in coda; hDue sceglie quello giusto per l'orologio
+      // e salta i vecchi. La coda e' limitata (memoria) tenendo i piu' recenti.
       var ch = (h + 1) >> 1, buf = hMem.buffer;
       hs.q.push({pts: pts, w: w, h: h, ly: ly, lu: lu, lv: lv,
         y: new Uint8Array(buf, y, ly * h).slice(), u: new Uint8Array(buf, u, lu * ch).slice(),
         v: new Uint8Array(buf, v, lv * ch).slice()});
+      while (hs.q.length > 12) { hs.q.shift(); hs.late++; }
       return;
     }
     hDraw(y, u, v, ly, lu, lv, w, h);
@@ -2548,10 +2549,28 @@ function hDue(){
     if (f) hs.late++;
     f = hs.q.shift();
   }
+  // nessun frame dovuto: se tutta la coda e' nel futuro si aspetta; se invece
+  // siamo rimasti indietro (tutti prima di T) si mostra comunque il piu' recente
   if (!f) return;
   hDrawPlanes(f);
   hShown(f.pts);
   hs.drewAt = performance.now();
+}
+// video rimasto troppo indietro rispetto all'audio e non recupera (dispositivo
+// che non regge la decodifica): si risincronizza saltando alla posizione audio
+// con un nuovo keyframe dal server. Con un minimo di distanza tra due salti.
+function hMaybeResync(T){
+  if (!hs.started || hs.shownPts < 0) return false;
+  var lag = T - hs.shownPts;
+  if (lag < 2.5) { hs.lagSince = 0; return false; }
+  var now = performance.now();
+  if (!hs.lagSince) { hs.lagSince = now; return false; }
+  if (now - hs.lagSince < 1500) return false;
+  if (now - (hs.resyncAt || 0) < 6000) return false;
+  hs.resyncAt = now; hs.lagSince = 0;
+  ui('video indietro ' + lag.toFixed(1) + ' s, risincronizzo');
+  beginAt(Math.floor(T));
+  return true;
 }
 function hPresent(me){
   if (!hs || hs !== me) return;
@@ -2774,16 +2793,12 @@ function hTick(){
   hs.target = T;
   hFps();
   hAudioWatch();
-  // video molto indietro rispetto all'orologio (p.es. dopo che il browser ha
-  // fermato il refresh): butta i frame vecchi in coda e rincorri, senza restare
-  // bloccato sul limite di 3 frame pronti
-  if (hGL && hs.q.length && T - hs.q[0].pts > 1.5) {
-    hs.late += hs.q.length; hs.q.length = 0;
-  }
+  // decodifica in anticipo fino a poco oltre l'orologio, entro un budget di
+  // tempo; la coda la svuota hDue mostrando il frame giusto. Se siamo indietro
+  // (outPts < T) decodifica a tutta per rincorrere; non si blocca mai sulla coda.
   var until = performance.now() + 25;
   if (hGL) {
-    var cap = (hs.shownPts >= 0 && T - hs.shownPts > 1.5) ? 60 : 3;
-    while (hs.q.length < cap && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
+    while (hs.q.length < 8 && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
       if (!hDecodeNext()) break;
     }
   } else {
@@ -2796,6 +2811,7 @@ function hTick(){
   // mentre l'audio corre
   if (performance.now() - (hs.drewAt || 0) > 50) hDue();
   if (hs.ended && hs.flushed && !hs.pk.length && !hs.q.length && T > hs.outPts + hs.dur) { hFinish(); return; }
+  if (hMaybeResync(T)) return;   // la risincronizzazione ricrea la sessione
   hWatch(T);
 }
 
