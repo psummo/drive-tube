@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>drive-tube</title>
+<style>
+body{background:#111;color:#fff;font-family:sans-serif;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+form{display:flex;flex-direction:column;gap:16px;width:min(420px,90vw)}
+h1{font-size:30px;margin:0 0 6px}
+input{font-size:28px;padding:12px;background:#222;color:#fff;border:1px solid #555;border-radius:10px;text-align:center;letter-spacing:2px}
+button{font-size:26px;padding:14px;background:#fff;color:#000;border:0;border-radius:10px}
+.msg{color:#f88;min-height:24px;font-size:20px}
+.note{color:#999;font-size:16px}
+a{color:#888;font-size:15px;text-align:center}
+</style>
+<form method="post" action="__ACTION__">
+<h1>__TITLE__</h1>
+<div class="msg">__MSG__</div>
+<input name="__FIELD__" type="__TYPE__" autocomplete="off" autocapitalize="off" autofocus required placeholder="__PH__">
+<button type="submit">Entra</button>
+<div class="note">__NOTE__</div>
+__LINK__
+</form>

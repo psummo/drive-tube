@@ -1,2 +1,6 @@
 wasm/.build/
 __pycache__/
+*.pyc
+.backup/
+.update-*/
+yt_mjpeg.py.bak

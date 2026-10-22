@@ -1,0 +1,254 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test H.264 WASM</title>
+<style>
+body{background:#111;color:#eee;font:20px/1.35 sans-serif;margin:0;padding:14px}
+h1{font-size:24px;margin:0 0 8px}
+.r{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #333;padding:6px 0}
+.r span:last-child{text-align:right}
+.ok{color:#4f4;font-weight:bold}.ko{color:#f55;font-weight:bold}.na{color:#fa0;font-weight:bold}
+canvas{display:none;width:100%;max-width:960px;background:#000;margin:8px 0}
+#clock{font-size:28px;color:#6cf}
+input,button{font-size:20px;background:#222;color:#fff;border:1px solid #555;padding:4px 8px}
+button{background:#2a5;border:0;padding:8px 18px}
+#bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;background:#1b1b1b;border:1px solid #333;padding:8px 10px;margin:0 0 10px}
+#bar a{color:#6cf;text-decoration:none}
+#bar .sp{flex:1}
+#updtxt{color:#aaa;font-size:17px}
+</style></head><body>
+<div id="bar">
+  <a href="/">&larr; App</a>
+  <a href="/test">Test browser</a>
+  <span class="sp"></span>
+  <span id="updtxt">Versione __VER__</span>
+</div>
+<h1>Test H.264 in WebAssembly</h1>
+<div id="clock"></div>
+<div>Video YouTube (id, vuoto = quello aperto nell'app) <input id="vid" size="13">
+ secondi <input id="sec" value="20" size="3"> <button id="go">Avvia</button></div>
+<canvas id="cvgl"></canvas><canvas id="cv2d"></canvas>
+<div id="out"></div>
+<script>
+var out = document.getElementById('out');
+var t0 = Date.now();
+setInterval(function(){ document.getElementById('clock').textContent = 'Contatore: ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s'; }, 100);
+function row(name, val, cls){
+  var d = document.createElement('div'); d.className = 'r';
+  d.innerHTML = '<span>' + name + '</span><span class="' + (cls || 'na') + '">' + val + '</span>';
+  out.appendChild(d); return d.lastChild;
+}
+function sleep(ms){ return new Promise(function(ok){ setTimeout(ok, ms); }); }
+
+// --- WASI minimo: il decoder non usa file ne' rete ---
+var mem = null, ex = null, onFrame = function(){};
+function dv(){ return new DataView(mem.buffer); }
+var wasi = {
+  environ_get: function(){ return 0; },
+  environ_sizes_get: function(a, b){ dv().setUint32(a, 0, true); dv().setUint32(b, 0, true); return 0; },
+  clock_time_get: function(id, prec, o){ dv().setBigUint64(o, BigInt(Math.round(performance.now() * 1e6)), true); return 0; },
+  fd_close: function(){ return 0; }, fd_fdstat_get: function(){ return 52; }, fd_fdstat_set_flags: function(){ return 52; },
+  fd_prestat_get: function(){ return 8; }, fd_prestat_dir_name: function(){ return 52; },
+  fd_read: function(){ return 52; }, fd_seek: function(){ return 52; }, path_open: function(){ return 52; },
+  fd_write: function(fd, iovs, n, nw){ var t = 0; for (var i = 0; i < n; i++) t += dv().getUint32(iovs + i * 8 + 4, true); dv().setUint32(nw, t, true); return 0; },
+  proc_exit: function(c){ throw new Error('exit ' + c); }
+};
+function loadWasm(){
+  return fetch('/h264.wasm').then(function(r){
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.arrayBuffer();
+  }).then(function(buf){
+    return WebAssembly.instantiate(buf, {
+      env: { on_frame: function(){ onFrame.apply(null, arguments); } },
+      wasi_snapshot_preview1: wasi
+    });
+  }).then(function(res){
+    ex = res.instance.exports; mem = ex.memory; ex._initialize();
+  });
+}
+var simdOk = (function(){
+  try { return WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11])); }
+  catch (e) { return false; }
+})();
+
+// --- disegno: WebGL (YUV -> RGB sulla GPU) oppure conversione in WASM + putImageData ---
+var cvgl = document.getElementById('cvgl'), cv2d = document.getElementById('cv2d');
+var gl = null, glTex = [], glScale = null;
+function initGL(){
+  try { gl = cvgl.getContext('webgl', {antialias: false, depth: false, preserveDrawingBuffer: false}); } catch (e) { gl = null; }
+  if (!gl) return false;
+  var vs = 'attribute vec2 p;varying vec2 t;uniform vec2 s;void main(){t=vec2((p.x+1.0)*0.5,(1.0-p.y)*0.5);gl_Position=vec4(p,0.0,1.0);}';
+  var fs = 'precision mediump float;varying vec2 t;uniform sampler2D Y,U,V;uniform vec2 sy,sc;void main(){' +
+    'float y=1.1644*(texture2D(Y,vec2(t.x*sy.x,t.y)).r-0.0627);float u=texture2D(U,vec2(t.x*sc.x,t.y)).r-0.5;float v=texture2D(V,vec2(t.x*sc.x,t.y)).r-0.5;' +
+    'gl_FragColor=vec4(y+1.7927*v,y-0.2132*u-0.5329*v,y+2.1124*u,1.0);}';
+  function sh(type, src){ var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+  var pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { gl = null; return false; }
+  gl.useProgram(pr);
+  var b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  ['Y','U','V'].forEach(function(n, i){
+    var tx = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.uniform1i(gl.getUniformLocation(pr, n), i); glTex.push(tx);
+  });
+  glScale = [gl.getUniformLocation(pr, 'sy'), gl.getUniformLocation(pr, 'sc')];
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  return true;
+}
+function drawGL(y, u, v, ly, lu, lv, w, h){
+  if (cvgl.width !== w) { cvgl.width = w; cvgl.height = h; gl.viewport(0, 0, w, h); }
+  var ch = (h + 1) >> 1, buf = mem.buffer;
+  var planes = [[y, ly, h], [u, lu, ch], [v, lv, ch]];
+  for (var i = 0; i < 3; i++) {
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, planes[i][1], planes[i][2], 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
+      new Uint8Array(buf, planes[i][0], planes[i][1] * planes[i][2]));
+  }
+  gl.uniform2f(glScale[0], w / ly, 1); gl.uniform2f(glScale[1], ((w + 1) >> 1) / lu, 1);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+var ctx2d = null;
+function draw2D(y, u, v, ly, lu, lv, w, h){
+  if (!ctx2d) ctx2d = cv2d.getContext('2d');
+  if (cv2d.width !== w) { cv2d.width = w; cv2d.height = h; }
+  var p = ex.to_rgba(y, u, v, ly, lu, lv, w, h);
+  ctx2d.putImageData(new ImageData(new Uint8ClampedArray(mem.buffer, p, w * h * 4), w, h), 0, 0);
+}
+function show(which){ cvgl.style.display = which === 'gl' ? 'block' : 'none'; cv2d.style.display = which === '2d' ? 'block' : 'none'; }
+
+// --- decodifica a pezzi, cedendo il controllo per non bloccare la pagina ---
+var CHUNK = 16384;
+function feedRange(data, from, to){
+  var c = data.subarray(from, to), p = ex.in_buf(c.length);
+  new Uint8Array(mem.buffer, p, c.length).set(c);
+  return ex.feed(c.length);
+}
+async function bench(data, mode, label){
+  if (ex.dec_init() !== 0) throw new Error('dec_init');
+  var n = 0, cell = row(label, '...');
+  onFrame = function(y, u, v, ly, lu, lv, w, h){
+    n++;
+    if (mode === 'gl') drawGL(y, u, v, ly, lu, lv, w, h);
+    else if (mode === '2d') draw2D(y, u, v, ly, lu, lv, w, h);
+  };
+  show(mode);
+  var busy = 0, t = performance.now(), last = t;
+  for (var off = 0; off < data.length; off += CHUNK) {
+    var a = performance.now();
+    feedRange(data, off, Math.min(data.length, off + CHUNK));
+    busy += performance.now() - a;
+    if (performance.now() - last > 200) { last = performance.now(); cell.textContent = n + ' frame...'; await sleep(0); }
+  }
+  var a2 = performance.now(); ex.flush(); busy += performance.now() - a2;
+  var fps = n / (busy / 1000);
+  cell.textContent = fps.toFixed(0) + ' fps (' + n + ' frame)';
+  return {n: n, fps: fps, cell: cell};
+}
+
+// --- riproduzione a velocita' reale, in loop ---
+var playGen = 0;
+function play(data, fps, mode){
+  var my = ++playGen;
+  var off = 0, decoded = 0, drawn = 0, dropped = 0, stalls = 0, target = 0;
+  var cell = row('Riproduzione in tempo reale', '...');
+  function pushNext(){
+    var end = Math.min(data.length, off + 65536), c = data.subarray(off, end);
+    var p = ex.in_buf(c.length);
+    new Uint8Array(mem.buffer, p, c.length).set(c);
+    ex.push(c.length); off = end;
+  }
+  function reset(){ ex.dec_init(); off = 0; }
+  // un frame alla volta; a fine clip riparte dall'inizio
+  function decodeOne(){
+    for (var guard = 0; guard < 1000; guard++) {
+      if (ex.left() === 0) {
+        if (off >= data.length) { var n = ex.flush(); reset(); if (n > 0) return; }
+        pushNext();
+      }
+      if (ex.next() > 0) return;
+    }
+  }
+  reset();
+  // disegno dentro la chiamata: dopo, la memoria del frame puo' essere riusata
+  onFrame = function(y, u, v, ly, lu, lv, w, h){
+    decoded++;
+    if (decoded < target) { dropped++; return; }
+    if (mode === 'gl') drawGL(y, u, v, ly, lu, lv, w, h); else draw2D(y, u, v, ly, lu, lv, w, h);
+    drawn++;
+  };
+  show(mode);
+  var start = performance.now(), statAt = start, statDrawn = 0;
+  function tick(){
+    if (my !== playGen) return;
+    target = Math.floor((performance.now() - start) / 1000 * fps) + 1;
+    var budget = performance.now() + 30;
+    while (decoded < target && performance.now() < budget) decodeOne();
+    if (target - decoded > fps) { start = performance.now() - decoded / fps * 1000; stalls++; }
+    var now = performance.now();
+    if (now - statAt >= 1000) {
+      var rate = (drawn - statDrawn) / ((now - statAt) / 1000); statDrawn = drawn; statAt = now;
+      cell.textContent = rate.toFixed(0) + ' fps mostrati su ' + fps.toFixed(0) + ', saltati ' + dropped + (stalls ? ', ritardi ' + stalls : '');
+      cell.className = rate >= fps * 0.9 ? 'ok' : 'ko';
+    }
+    setTimeout(tick, 4);
+  }
+  tick();
+}
+
+async function run(){
+  playGen++;
+  out.innerHTML = '';
+  row('WebAssembly SIMD', simdOk ? 'SI' : 'NO', simdOk ? 'ok' : 'ko');
+  if (!simdOk) { row('Esito', 'questo browser non ha WASM SIMD, serve la versione senza SIMD', 'ko'); return; }
+  var glOk = gl || initGL();
+  row('WebGL', glOk ? 'SI' : 'NO', glOk ? 'ok' : 'ko');
+  row('Pagina sicura (HTTPS)', window.isSecureContext ? 'SI' : 'NO (non serve)', 'na');
+  var t = performance.now();
+  try { if (!ex) await loadWasm(); }
+  catch (e) { row('Decoder', 'errore: ' + e.message, 'ko'); return; }
+  row('Decoder caricato', ((performance.now() - t) / 1000).toFixed(1) + ' s', 'ok');
+
+  var sec = Math.max(3, Math.min(60, parseInt(document.getElementById('sec').value, 10) || 20));
+  var vid = document.getElementById('vid').value.trim();
+  var cell = row('Scarico ' + sec + ' s di H.264 da YouTube', '...');
+  t = performance.now();
+  var res;
+  try { res = await fetch('/h264test?sec=' + sec + (vid ? '&v=' + encodeURIComponent(vid) : '')); }
+  catch (e) { cell.textContent = 'errore di rete'; cell.className = 'ko'; return; }
+  if (!res.ok) { cell.textContent = 'errore: ' + (await res.text()).slice(0, 160); cell.className = 'ko'; return; }
+  var fmt = res.headers.get('X-Fmt') || '?';
+  var tHead = (performance.now() - t) / 1000, tBody = performance.now();
+  var reader = res.body.getReader(), parts = [], size = 0;
+  while (true) {
+    var r = await reader.read();
+    if (r.done) break;
+    parts.push(r.value); size += r.value.length;
+    cell.textContent = (size / 1e6).toFixed(1) + ' MB';
+  }
+  var dl = (performance.now() - t) / 1000;
+  var data = new Uint8Array(size), o = 0;
+  parts.forEach(function(p){ data.set(p, o); o += p.length; });
+  if (size < 1000) { cell.textContent = 'stream vuoto'; cell.className = 'ko'; return; }
+  cell.textContent = (size / 1e6).toFixed(1) + ' MB in ' + dl.toFixed(1) + ' s'; cell.className = 'ok';
+  row('di cui ricerca su YouTube (yt-dlp)', tHead.toFixed(1) + ' s', 'na');
+  row('di cui trasferimento dati', ((performance.now() - tBody) / 1000).toFixed(1) + ' s', 'na');
+  row('Formato YouTube', fmt, 'na');
+  row('Peso del video', (size * 8 / sec / 1e6).toFixed(2) + ' Mbit/s (MJPEG di oggi: circa 40-50)', 'ok');
+  await sleep(50);
+
+  var b0 = await bench(data, 'none', 'Solo decodifica');
+  var srcFps = b0.n / sec;
+  var bGL = glOk ? await bench(data, 'gl', 'Decodifica + disegno WebGL') : null;
+  var b2 = await bench(data, '2d', 'Decodifica + disegno senza WebGL');
+  var best = bGL && bGL.fps > b2.fps ? bGL : b2, mode = best === bGL ? 'gl' : '2d';
+  var ratio = best.fps / srcFps;
+  row('Esito', (ratio >= 1.5 ? 'OK: margine x' : ratio >= 1.05 ? 'AL LIMITE: margine x' : 'TROPPO LENTO: x') + ratio.toFixed(1) +
+      ' rispetto ai ' + srcFps.toFixed(0) + ' fps del video', ratio >= 1.5 ? 'ok' : ratio >= 1.05 ? 'na' : 'ko');
+  play(data, srcFps, mode);
+}
+document.getElementById('go').onclick = function(){ run(); };
+</script></body></html>

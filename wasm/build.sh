@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ricompila il decoder H.264 in WebAssembly e lo incorpora in yt_mjpeg.py.
+# Ricompila il decoder H.264 in WebAssembly e lo copia in drivetube/web/h264.wasm.
 # Serve solo clang/lld (>= 15), cmake, ninja, make, git e python3: niente emscripten.
 # Uso: wasm/build.sh   (dalla cartella drive-tube; lavora in wasm/.build)
 set -e
@@ -59,14 +59,6 @@ $CC -mexec-model=reactor -O3 -msimd128 "$R/wasm/h264dec.c" -I ff/include -L ff/l
   -Wl,--strip-all -Wl,--gc-sections -Wl,-z,stack-size=1048576 -o h264.wasm
 ls -l h264.wasm
 
-# 5) incorporo in yt_mjpeg.py (lzma + base64)
-python3 - "$R/yt_mjpeg.py" h264.wasm <<'PY'
-import base64, lzma, re, sys
-py, wasm = sys.argv[1], sys.argv[2]
-s = open(py).read()
-b64 = base64.b64encode(lzma.compress(open(wasm, "rb").read(), preset=9)).decode()
-s, n = re.subn(r'^H264_WASM_XZ_B64 = ".*"$', 'H264_WASM_XZ_B64 = "' + b64 + '"', s, count=1, flags=re.M)
-assert n == 1, "costante H264_WASM_XZ_B64 non trovata"
-open(py, "w").write(s)
-print("incorporato in", py)
-PY
+# 5) copio il decoder tra i file del frontend, servito al browser come /h264.wasm
+cp h264.wasm "$R/drivetube/web/h264.wasm"
+echo "copiato in $R/drivetube/web/h264.wasm"

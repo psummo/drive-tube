@@ -8,7 +8,7 @@
 
 A lightweight YouTube player for in-car browsers (built for the Tesla browser), so that passengers can keep watching while the car is moving: those browsers block `<video>` and `<audio>` while driving.
 
-drive-tube is a single Python file. `yt-dlp` finds the YouTube stream and `ffmpeg` prepares it for the browser, which plays it on a canvas and through the Web Audio API, with no `<video>` or `<audio>` tags. Audio is the master clock and the video follows it.
+drive-tube is a small Python server with no dependencies beyond the standard library (see [Code layout](#code-layout)). `yt-dlp` finds the YouTube stream and `ffmpeg` prepares it for the browser, which plays it on a canvas and through the Web Audio API, with no `<video>` or `<audio>` tags. Audio is the master clock and the video follows it.
 
 Two video formats, selectable in the settings:
 - **H.264** (default): the video arrives from YouTube as-is, with no re-encoding, and the browser decodes it with FFmpeg's decoder compiled to WebAssembly and draws it with WebGL. It needs about 0.5–2 Mbit/s and almost no server CPU. It works over plain http. It requires a browser with WebAssembly SIMD (Chrome 91 or later; the Tesla browser has it).
@@ -175,37 +175,69 @@ You need a domain name pointing to the machine (a free [DuckDNS](https://www.duc
 Port and paths can be changed with `YT_HTTPS_PORT`, `YT_CERT` and `YT_KEY`.
 
 ## Player settings
-The gear icon (top left) opens the settings: video format (H.264 or MJPEG), resolution, frame rate and JPEG quality (these two for MJPEG only), audio quality and audio buffer. In H.264 the resolution is capped at 720p. **Salva e applica** (save and apply) stores them in **browser cookies**: there is no configuration file on the server. Without cookies the defaults in the code apply (`SETTINGS` in `yt_mjpeg.py`). Recent searches are stored in a cookie too.
+The gear icon (top left) opens the settings: video format (H.264 or MJPEG), resolution, frame rate and JPEG quality (these two for MJPEG only), audio quality and audio buffer. In H.264 the resolution is capped at 720p. **Salva e applica** (save and apply) stores them in **browser cookies**: there is no configuration file on the server. Without cookies the defaults in the code apply (`SETTINGS` in `drivetube/config.py`). Recent searches are stored in a cookie too.
 
 Tapping the video shows the suggestions, the home button, the picture-fit and full-screen buttons and a pause button in the middle; they hide after 5 seconds. While paused they stay visible.
 
 The line at the top of the screen shows, in H.264 mode, how many seconds are buffered and the live frame rate: `28 fps (video 30)` means 28 frames shown in the last second out of the 30 the video has; `saltati N` (skipped) counts frames dropped because the decoder fell behind. On a slow connection the player adapts: every time it has to stop for loading, it waits for a longer buffer before carrying on (4, 12, 20, 28, then 30 seconds) and the next videos start with a bigger margin too. Frames are decoded a little ahead and shown on the screen refresh, following a smoothed copy of the audio clock, so they come out at even intervals. If the browser keeps the audio switched off (some only allow it after a tap), the player notices within a few seconds and asks for a tap on the screen, then carries on from the same point with sound. If the browser throttles its screen refresh (the tab goes to the background, or the screen slows down), the video keeps advancing from the internal timer instead of freezing while the audio clock runs on. On a device that cannot decode the video fast enough, the picture no longer freezes: it plays as fast as the device allows and, if it falls too far behind the sound, it resynchronises by jumping to the current position. If that happens often, choosing 480p in the settings decodes faster. The same line ends with the audio state (`audio running 96KB 12blk 12prog`: browser audio state, MP3 received, blocks decoded and scheduled), and audio events are also written to the server log as `player: ...` lines, so a playback problem on the car can be diagnosed from the admin page.
 
 ## Updates
-- **From the admin page**, *Server* section: the update button compares the version with `main`; installing downloads the file, checks its syntax, keeps a backup in `yt_mjpeg.py.bak` and restarts the server.
-- **By hand**: `cd drive-tube && git pull`, then restart the service. If you had installed from the admin page, run `git checkout yt_mjpeg.py` first.
+- **From the admin page**, *Server* section: the update button compares the version with `main`; installing downloads the latest version from GitHub, checks the syntax of every file, moves the current `yt_mjpeg.py` and `drivetube/` to `.backup/` and restarts the server.
+- **By hand**: `cd drive-tube && git pull`, then restart the service. If you had updated from the admin page, the folder no longer matches git: run `git fetch origin && git reset --hard origin/main` instead.
+- **From 14.x to 15.0**: the 14.x updater only downloads `yt_mjpeg.py`. When the new `yt_mjpeg.py` starts and finds no `drivetube/` folder next to it, it downloads it from GitHub once, so updating from the admin page works. On a git checkout, running `git fetch origin && git reset --hard origin/main` and restarting the service is cleaner.
 
 ## Releases
-Releases are published with a `vX.Y` tag: GitHub Actions creates the release with `yt_mjpeg.py` attached.
+Releases are published with a `vX.Y` tag: GitHub Actions checks the syntax and creates the release with a `drive-tube-vX.Y.tar.gz` archive (`yt_mjpeg.py`, `drivetube/`, README, LICENSE, `setup.sh`).
 
 ## Test pages
 Available after login:
 - `/test`: which features the browser offers (WebCodecs, WebAssembly, WebGL, image formats).
 - `/wasmtest`: downloads a few seconds of the current video in H.264, measures how many frames per second the browser can decode and plays it in real time.
 
+## Code layout
+`yt_mjpeg.py` is only the entry point (the systemd service runs it) and holds the version number. The server is the `drivetube/` package; the frontend is in `drivetube/web/`.
+
+| Module | What it does |
+|---|---|
+| `drivetube/youtube.py` | **Getting data from YouTube** through yt-dlp: search, channels, personal feed, suggestions, a video's information and its stream URLs. It knows nothing about ffmpeg or the player, so it can be reused on its own. |
+| `drivetube/media.py` | **ffmpeg**: the command line, the FIFO queues, reading MJPEG frames, demuxing H.264 from MPEG-TS, MP3 audio. It knows nothing about YouTube: it gets ready-made URLs. |
+| `drivetube/chunkproxy.py` | Local proxy that downloads any HTTP URL in 10 MB pieces and resumes dropped connections. |
+| `drivetube/player.py` | Playback for each browser session: ties `youtube` to `media`, handles start, restarts after errors or 403, pause and cleanup. |
+| `drivetube/server.py` | HTTP server: pages, player API, admin page, start-up. |
+| `drivetube/context.py` | Per-browser sessions, thread context and the privacy-aware log. |
+| `drivetube/access.py`, `settings.py` | Access codes and admin password; player settings and recent searches in browser cookies. |
+| `drivetube/tools.py`, `potoken.py` | yt-dlp and Node.js versions and updates; PO token provider and the network diagnosis. |
+| `drivetube/update.py` | Update from the admin page. |
+| `drivetube/config.py` | Version, port, paths and default settings. |
+| `drivetube/web/` | **Frontend**: the player (`player.html`, with its CSS and JavaScript), home, search, channel, login, admin and test pages, and the H.264 decoder (`h264.wasm`). |
+
+For example, a script that only needs YouTube search can do:
+```python
+import sys; sys.path.insert(0, "/path/to/drive-tube")
+from drivetube.youtube import search_yt, video_info
+print(search_yt("lofi"))
+```
+(`search_yt` and the other list functions read the access cookie settings for the current browser session; outside a session they run without cookies.)
+
 ## Repository contents
 | File | What it is for |
 |---|---|
-| `yt_mjpeg.py` | **The whole app**: server, web pages and the embedded decoder. This is the only file you need to run drive-tube. |
+| `yt_mjpeg.py` | Entry point and version number. |
+| `drivetube/` | The app: backend modules and, in `web/`, the frontend (see [Code layout](#code-layout)). |
+| `setup.sh` | One-script install (see [Easy setup](#easy-setup-one-script)). |
 | `README.md` | This guide. |
 | `LICENSE` | MIT license, with the passengers-only notice. |
 | `wasm/h264dec.c` | Source of the H.264 decoder that runs in the browser: a thin C wrapper around FFmpeg's decoder. |
-| `wasm/build.sh` | Script that rebuilds the decoder from FFmpeg's sources and embeds the result back into `yt_mjpeg.py`. |
-| `.github/workflows/release.yml` | Publishes a GitHub release with `yt_mjpeg.py` attached when a `vX.Y` tag is pushed. |
+| `wasm/build.sh` | Script that rebuilds the decoder from FFmpeg's sources and copies it to `drivetube/web/h264.wasm`. |
+| `.github/workflows/release.yml` | Publishes a GitHub release archive when a `vX.Y` tag is pushed. |
 
-**You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already inside `yt_mjpeg.py` (compressed and base64-encoded, served to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt: it is the source of what is embedded. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
+**You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.0
+- **Code split into modules**: the single 5,400-line file is now the `drivetube/` package. Getting data from YouTube (`youtube.py`) is separate from ffmpeg (`media.py`), the local download proxy and the player logic, and the frontend (HTML, CSS, JavaScript and the WebAssembly decoder) lives in `drivetube/web/` as plain files. `yt_mjpeg.py` stays the entry point, so the systemd service does not change. No change in behaviour: the same end-to-end test (playback in H.264 and MJPEG, audio, search, channels, suggestions, admin) passes before and after.
+- The admin page update now downloads the whole package, checks every file and keeps the previous version in `.backup/`. Updating from 14.x works too (see [Updates](#updates)).
 
 ### 14.16
 - **Picture fit**: a new button over the video switches between *Adatta* (whole picture, black bars), *Riempi* (fills the screen, crops the edges) and *Stira* (fills the screen, stretched). The choice is remembered in the browser. Where the browser allows it, *Schermo intero* switches to full screen.

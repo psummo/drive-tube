@@ -1,0 +1,347 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>drive-tube admin</title>
+<style>
+body{background:#111;color:#eee;font:17px/1.4 sans-serif;margin:0;padding:12px 14px 40px}
+h1{font-size:22px;margin:0}
+h2{font-size:18px;margin:26px 0 8px;border-bottom:1px solid #333;padding-bottom:6px}
+a{color:#6cf;text-decoration:none}
+#bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;background:#1b1b1b;border:1px solid #333;padding:10px 12px}
+#bar .sp{flex:1}
+table{width:100%;border-collapse:collapse;font-size:16px}
+th,td{text-align:left;padding:7px 6px;border-bottom:1px solid #2a2a2a;vertical-align:middle}
+th{color:#aaa;font-weight:normal}
+code{font:16px monospace;background:#222;padding:2px 6px;border-radius:4px;user-select:all}
+input{font-size:17px;background:#222;color:#fff;border:1px solid #555;padding:6px 8px;border-radius:6px}
+button{font-size:16px;background:#345;color:#fff;border:0;padding:7px 12px;border-radius:6px;cursor:pointer}
+button.go{background:#2a5}
+button.warn{background:#933}
+button:disabled{opacity:.5}
+.off{color:#777}
+.ok{color:#4f4}.ko{color:#f66}.na{color:#aaa}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+#log{white-space:pre-wrap;font:12px/1.4 monospace;background:#0b0b0b;border:1px solid #333;padding:8px;max-height:60vh;overflow:auto;display:none}
+#msg{min-height:22px;color:#fc6}
+small{color:#999}
+</style></head><body>
+<div id="bar">
+  <h1>drive-tube admin</h1>
+  <span class="na">versione __VER__</span>
+  <span class="sp"></span>
+  <a href="/home">App</a>
+  <a href="/test">Test browser</a>
+  <a href="/wasmtest">Test H.264</a>
+  <a href="/logout">Esci</a>
+</div>
+<div id="msg"></div>
+
+<h2>Codici di accesso</h2>
+<small>Chi ha un codice attivo puo' usare l'app. Un codice si usa da un solo schermo alla volta: aprendolo su un altro, il primo si ferma.</small>
+<table id="codes"><thead><tr><th>Nome</th><th>Codice</th><th>Stato</th><th></th></tr></thead><tbody></tbody></table>
+<div class="row">
+  <input id="newlabel" placeholder="nome (es. Marco)" size="16">
+  <input id="newcode" placeholder="codice (vuoto = casuale)" size="20">
+  <button class="go" id="addcode">Aggiungi</button>
+</div>
+
+<h2>Sessioni attive</h2>
+<table id="sess"><thead><tr><th>Chi</th><th>Stato</th><th>Modo</th><th>ffmpeg</th><th>Ultima attivita'</th><th></th></tr></thead><tbody></tbody></table>
+
+<h2>Server</h2>
+<div class="row">
+  <span id="updtxt" class="na">Versione __VER__</span>
+  <button id="updbtn">Controlla aggiornamenti</button>
+  <button class="warn" id="restart">Riavvia il server</button>
+</div>
+<div class="row">
+  <span id="ytdtxt" class="na">yt-dlp: controllo...</span>
+  <button id="ytdbtn" disabled>Aggiorna yt-dlp</button>
+</div>
+<div class="row"><small id="tools"></small></div>
+
+<h2>Cookie YouTube (facoltativi)</h2>
+<small>Con i cookie del tuo account YouTube le richieste passano piu' facilmente e nella home compaiono iscrizioni, "guarda piu' tardi" e "mi piace". Chi li usa agisce con il tuo account.</small>
+<div class="row"><span id="ckstate" class="na">controllo...</span></div>
+<div class="row">
+  <span>Usa i cookie per:</span>
+  <button data-ck="off">nessuno</button>
+  <button data-ck="admin">solo admin</button>
+  <button data-ck="all">tutti</button>
+</div>
+<div class="row" id="feedrow" style="display:none">
+  <span>Home mostra:</span>
+  <button data-feed="personal">iscrizioni e mi piace</button>
+  <button data-feed="related">solo correlati</button>
+</div>
+<form class="row" method="post" action="/admin/cookies" enctype="multipart/form-data">
+  <input type="file" name="f" accept=".txt,text/plain" required>
+  <button type="submit">Carica cookie (Netscape)</button>
+  <button type="submit" formaction="/admin/cookies?anon=1">Carica senza account (solo visitatore)</button>
+  <button type="button" class="warn" id="ckdel">Cancella i cookie</button>
+</form>
+
+<h2>PO token (verifica anti-bot di YouTube)</h2>
+<small>Senza cookie, i token del plugin bgutil fanno passare le richieste a YouTube. Servono il plugin e il suo server locale (Node.js 22+): il primo pulsante installa e avvia tutti e due.</small>
+<div class="row"><span id="potplug" class="na">plugin: controllo...</span></div>
+<div class="row"><span id="potsrv" class="na">server: controllo...</span></div>
+<div class="row">
+  <button class="go" id="potsrvbtn">Installa / aggiorna plugin e server</button>
+  <button id="potinst">Solo il plugin</button>
+  <button id="pottest">Prova con un video</button>
+</div>
+<div id="potout" style="white-space:pre-wrap;font:12px/1.4 monospace;background:#0b0b0b;border:1px solid #333;padding:8px;display:none"></div>
+
+<h2>Rete verso YouTube</h2>
+<small>Se YouTube risponde "Sign in to confirm you're not a bot" anche con il PO token, di solito blocca l'indirizzo del server. A volte basta un altro client di YouTube o solo IPv4: la diagnosi prova le combinazioni e puoi usare quella che passa. Se non passa niente, serve un proxy su una connessione di casa (o i cookie).</small>
+<div class="row"><span id="netcur" class="na">impostazione: controllo...</span></div>
+<div class="row">
+  <button class="go" id="netdiag">Trova una configurazione che funziona</button>
+  <button id="netreset">Torna ai valori predefiniti</button>
+</div>
+<table id="netres" style="display:none"><thead><tr><th>Configurazione</th><th>Risultato</th><th></th></tr></thead><tbody></tbody></table>
+<div class="row">
+  <input id="netproxy" placeholder="proxy, es. socks5://casa.example:1080 (vuoto = nessuno)" size="44">
+  <button id="netproxybtn">Salva proxy</button>
+</div>
+
+<h2>Log</h2>
+<div class="row"><button id="logbtn">Mostra il log</button></div>
+<div id="log"></div>
+
+<script>
+function $(id){ return document.getElementById(id); }
+function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function say(t, bad){ $('msg').textContent = t || ''; $('msg').style.color = bad ? '#f66' : '#fc6'; }
+function api(path, data){
+  return fetch('/admin/api/' + path, {
+    method: data === undefined ? 'GET' : 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: data === undefined ? undefined : JSON.stringify(data)
+  }).then(function(r){
+    return r.json().catch(function(){ return {ok: false, error: 'HTTP ' + r.status}; });
+  });
+}
+function ago(s){
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + ' s fa';
+  if (s < 3600) return Math.round(s / 60) + ' min fa';
+  return (s / 3600).toFixed(1) + ' ore fa';
+}
+function render(st){
+  var cb = $('codes').querySelector('tbody');
+  cb.innerHTML = '';
+  if (!st.codes.length) cb.innerHTML = '<tr><td colspan="4" class="na">nessun codice: aggiungine uno qui sotto</td></tr>';
+  st.codes.forEach(function(c){
+    var tr = document.createElement('tr');
+    var on = c.enabled !== false;
+    tr.innerHTML = '<td' + (on ? '' : ' class="off"') + '>' + esc(c.label) + '</td><td><code>' + esc(c.code) + '</code></td>' +
+      '<td class="' + (on ? 'ok' : 'ko') + '">' + (on ? 'attivo' : 'disattivato') + '</td>' +
+      '<td><button data-a="toggle">' + (on ? 'Disattiva' : 'Attiva') + '</button> <button class="warn" data-a="del">Elimina</button></td>';
+    tr.querySelector('[data-a=toggle]').onclick = function(){ api('code/toggle', {code: c.code}).then(done); };
+    tr.querySelector('[data-a=del]').onclick = function(){
+      if (!confirm("Eliminare il codice di " + c.label + "? Chi lo usa non potrà più entrare.")) return;
+      api('code/del', {code: c.code}).then(done);
+    };
+    cb.appendChild(tr);
+  });
+  var sb = $('sess').querySelector('tbody');
+  sb.innerHTML = '';
+  if (!st.sessions.length) sb.innerHTML = '<tr><td colspan="6" class="na">nessuna sessione</td></tr>';
+  st.sessions.forEach(function(x){
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + esc(x.who) + ' <small>' + esc(x.sid.slice(0, 4)) + '</small></td>' +
+      '<td>' + (x.playing ? 'in riproduzione' : '<span class="na">home</span>') +
+      (x.err ? ' <small class="ko">' + esc(x.err) + '</small>' : '') + '</td>' +
+      '<td>' + esc(x.vmode) + '</td><td class="' + (x.ff ? 'ok' : 'na') + '">' + (x.ff ? 'attivo' : 'fermo') + '</td>' +
+      '<td>' + ago(x.seen) + '</td><td><button class="warn">Chiudi</button></td>';
+    tr.querySelector('button').onclick = function(){ api('session/stop', {sid: x.sid}).then(done); };
+    sb.appendChild(tr);
+  });
+}
+function load(){ return api('state').then(function(st){ if (st.ok === false) { say(st.error, true); return; } render(st); }); }
+function done(r){
+  if (r && r.ok === false) say(r.error, true); else say(r && r.msg ? r.msg : '');
+  load();
+}
+$('addcode').onclick = function(){
+  var label = $('newlabel').value.trim();
+  if (!label) { say('scrivi un nome per il codice', true); return; }
+  api('code/add', {label: label, code: $('newcode').value.trim()}).then(function(r){
+    if (r.ok) { $('newlabel').value = ''; $('newcode').value = ''; say('codice per ' + label + ': ' + r.code); load(); }
+    else say(r.error, true);
+  });
+};
+$('updbtn').onclick = function(){
+  var btn = $('updbtn'), txt = $('updtxt');
+  if (btn.getAttribute('data-mode') === 'install') {
+    btn.disabled = true;
+    txt.textContent = 'installo, il server si riavvia...';
+    api('update/install', {}).then(function(j){
+      if (!j.ok) { txt.textContent = 'errore: ' + j.error; btn.disabled = false; return; }
+      txt.textContent = 'installata ' + j.version + ', ricarico...';
+      waitRestart(txt);
+    });
+    return;
+  }
+  btn.disabled = true;
+  txt.textContent = 'controllo...';
+  api('update/check').then(function(j){
+    btn.disabled = false;
+    if (j.error) { txt.textContent = j.error; return; }
+    if (j.newer) {
+      txt.textContent = 'Nuova versione ' + j.latest + ' (hai ' + j.current + ')';
+      btn.textContent = 'Installa';
+      btn.setAttribute('data-mode', 'install');
+    } else txt.textContent = 'Versione ' + j.current + ', aggiornata';
+  });
+};
+function waitRestart(txt){
+  var tries = 0;
+  (function wait(){
+    setTimeout(function(){
+      fetch('/health').then(function(r){ if (r.ok) location.reload(); else throw 0; })
+        .catch(function(){ if (++tries < 40) wait(); else txt.textContent = 'riavvio lento, ricarica la pagina'; });
+    }, 1500);
+  })();
+}
+$('restart').onclick = function(){
+  if (!confirm('Riavviare il server? Tutti i video in corso si fermano.')) return;
+  $('updtxt').textContent = 'riavvio...';
+  api('restart', {}).then(function(){ waitRestart($('updtxt')); });
+};
+$('logbtn').onclick = function(){
+  var box = $('log');
+  fetch('/admin/log').then(function(r){ return r.text(); }).then(function(t){
+    box.style.display = 'block';
+    box.textContent = t;
+    box.scrollTop = box.scrollHeight;
+    $('logbtn').textContent = 'Aggiorna il log';
+  });
+};
+function loadYtdlp(force){
+  $('ytdtxt').textContent = 'yt-dlp: controllo...';
+  return api('ytdlp' + (force ? '?force=1' : '')).then(function(j){
+    var t = 'yt-dlp ' + j.installed + (j.latest ? ' (ultima ' + j.latest + ')' : '');
+    if (j.error) t += ' - ' + j.error;
+    $('ytdtxt').textContent = t;
+    $('ytdtxt').className = j.newer ? 'ko' : 'ok';
+    $('ytdbtn').disabled = false;
+    $('ytdbtn').textContent = j.newer ? 'Aggiorna yt-dlp' : 'Controlla di nuovo';
+    $('ytdbtn').setAttribute('data-mode', j.newer ? 'update' : 'check');
+    $('tools').textContent = 'in uso: ' + j.path + ' · ' + j.ffmpeg + ' · JavaScript: ' + j.js;
+  });
+}
+$('ytdbtn').onclick = function(){
+  var btn = $('ytdbtn');
+  if (btn.getAttribute('data-mode') !== 'update') { loadYtdlp(true); return; }
+  btn.disabled = true;
+  $('ytdtxt').textContent = 'scarico yt-dlp...';
+  api('ytdlp/update', {}).then(function(j){
+    if (!j.ok) { say('aggiornamento yt-dlp fallito: ' + j.error, true); btn.disabled = false; return; }
+    say('yt-dlp aggiornato a ' + j.version);
+    loadYtdlp(false);
+  });
+};
+function loadPot(){
+  return api('pot').then(function(j){
+    $('potplug').textContent = j.plugin.length ? 'plugin installato: ' + j.plugin.join(', ') : 'plugin non installato';
+    $('potplug').className = j.plugin.length ? 'ok' : 'ko';
+    var t = j.server ? 'server attivo' + (j.server_version ? ' (versione ' + j.server_version + ')' : '') + (j.managed ? ', avviato da drive-tube' : '')
+      : (j.built ? 'server compilato ma non risponde' + (j.node ? '' : ': manca node') : 'server non installato in ~/bgutil-ytdlp-pot-provider');
+    $('potsrv').textContent = t + (j.node ? ' · node ' + j.node : ' · node non installato');
+    $('potsrv').className = j.server ? 'ok' : 'ko';
+    var ins = j.install || {}, out = $('potout'), b = $('potsrvbtn');
+    b.disabled = !!ins.running;
+    if (ins.log && ins.log.length) {
+      out.style.display = 'block';
+      out.style.color = ins.error ? '#f88' : (ins.ok ? '#8f8' : '#ccc');
+      out.textContent = (ins.running ? 'installazione in corso: ' + ins.step + '...' + String.fromCharCode(10, 10) : '') + ins.log.join(String.fromCharCode(10));
+    }
+    clearTimeout(loadPot.t);
+    if (ins.running) loadPot.t = setTimeout(loadPot, 2000);
+  });
+}
+$('potsrvbtn').onclick = function(){
+  $('potsrvbtn').disabled = true;
+  api('pot/server', {}).then(function(j){
+    if (!j.ok) { say(j.error, true); $('potsrvbtn').disabled = false; return; }
+    say(''); loadPot();
+  });
+};
+$('potinst').onclick = function(){
+  var b = $('potinst'); b.disabled = true; say('scarico il plugin...');
+  api('pot/plugin', {}).then(function(j){
+    b.disabled = false;
+    if (!j.ok) { say('plugin non installato: ' + j.error, true); return; }
+    say('plugin installato in ' + j.path); loadPot();
+  });
+};
+function loadNet(){
+  return api('pot').then(function(j){
+    var n = j.net || {};
+    $('netcur').textContent = 'in uso: ' + (n.label || 'client predefiniti');
+    if (document.activeElement !== $('netproxy')) $('netproxy').value = n.proxy || '';
+  });
+}
+$('netdiag').onclick = function(){
+  var b = $('netdiag'), t = $('netres'), tb = t.querySelector('tbody');
+  b.disabled = true; t.style.display = 'table';
+  tb.innerHTML = '<tr><td colspan="3" class="na">provo ' + 8 + ' combinazioni, serve circa un minuto...</td></tr>';
+  api('yt/diagnose', {}).then(function(j){
+    b.disabled = false; tb.innerHTML = '';
+    if (!j.ok) { tb.innerHTML = '<tr><td colspan="3" class="ko">' + esc(j.error) + '</td></tr>'; return; }
+    var any = false;
+    j.results.forEach(function(r){
+      var tr = document.createElement('tr');
+      any = any || r.ok;
+      tr.innerHTML = '<td>' + esc(r.label) + '</td><td class="' + (r.ok ? 'ok' : 'ko') + '">' +
+        (r.ok ? 'funziona' + (r.token ? ' (con PO token)' : '') : esc(r.error || 'rifiutato')) + '</td><td>' +
+        (r.ok ? '<button class="go">Usa questa</button>' : '') + '</td>';
+      var btn = tr.querySelector('button');
+      if (btn) btn.onclick = function(){ api('yt/net', {client: r.client, ipv4: r.ipv4}).then(function(x){ done(x); loadNet(); }); };
+      tb.appendChild(tr);
+    });
+    if (!any) say('nessuna combinazione passa: YouTube blocca l\u0027indirizzo del server. Serve un proxy di casa o i cookie.', true);
+  });
+};
+$('netreset').onclick = function(){ api('yt/net', {client: '', ipv4: false}).then(function(x){ done(x); loadNet(); }); };
+$('netproxybtn').onclick = function(){ api('yt/net', {proxy: $('netproxy').value.trim()}).then(function(x){ done(x); loadNet(); }); };
+loadNet();
+$('pottest').onclick = function(){
+  var b = $('pottest'), out = $('potout'); b.disabled = true;
+  out.style.display = 'block'; out.textContent = 'chiedo a YouTube un video di prova, puo\u0027 servire un minuto...';
+  api('pot/test', {}).then(function(j){
+    b.disabled = false;
+    out.textContent = (j.ok ? (j.token ? 'OK: video raggiungibile e PO token generato' : 'OK: video raggiungibile (nessun PO token usato)') : 'ERRORE: YouTube ha rifiutato la richiesta') + ' [' + (j.net || '') + ']' + String.fromCharCode(10, 10) + (j.lines || []).join(String.fromCharCode(10));
+    out.style.color = j.ok ? '#8f8' : '#f88';
+  });
+};
+function loadCk(){
+  return api('cookies').then(function(j){
+    var names = {off: 'nessuno', admin: 'solo admin', all: 'tutti'};
+    $('ckstate').textContent = (j.present ? 'file caricato il ' + new Date(j.mtime * 1000).toLocaleString() : 'nessun file caricato') +
+      ' · in uso per: ' + names[j.mode] + (j.present || j.mode === 'off' ? '' : ' (ma manca il file)');
+    $('ckstate').className = j.present && j.mode !== 'off' ? 'ok' : 'na';
+    document.querySelectorAll('[data-ck]').forEach(function(b){ b.className = b.getAttribute('data-ck') === j.mode ? 'go' : ''; });
+    var show = j.present && j.mode !== 'off';
+    $('feedrow').style.display = show ? '' : 'none';
+    document.querySelectorAll('[data-feed]').forEach(function(b){ b.className = b.getAttribute('data-feed') === j.feed ? 'go' : ''; });
+  });
+}
+document.querySelectorAll('[data-ck]').forEach(function(b){
+  b.onclick = function(){ api('cookies/mode', {mode: b.getAttribute('data-ck')}).then(function(r){ done(r); loadCk(); }); };
+});
+document.querySelectorAll('[data-feed]').forEach(function(b){
+  b.onclick = function(){ api('home_feed/mode', {mode: b.getAttribute('data-feed')}).then(function(r){ done(r); loadCk(); }); };
+});
+$('ckdel').onclick = function(){
+  if (!confirm('Cancellare il file dei cookie YouTube dal server?')) return;
+  api('cookies/delete', {}).then(function(r){ done(r); loadCk(); });
+};
+load();
+loadYtdlp(false);
+loadPot();
+loadCk();
+setInterval(load, 5000);
+</script>
+</body></html>

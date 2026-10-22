@@ -1,0 +1,1554 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:sans-serif}
+  #screen,#hscreen{width:100%;height:100%;object-fit:contain;background:#000;display:none}
+  #overlay{
+    position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.72);z-index:3;color:#fff;flex-direction:column;
+  }
+  #msg{font-size:28px;margin-bottom:24px;text-align:center;white-space:pre-line;line-height:1.35}
+  #hud{position:fixed;top:14px;left:0;right:0;text-align:center;z-index:7;font-size:20px;color:#fff;text-shadow:0 1px 4px #000;pointer-events:none}
+  #go{
+    width:160px;height:160px;border-radius:50%;background:#fff;color:#000;border:0;
+    font-size:72px;display:none;
+  }
+  #prog{position:fixed;left:12px;right:12px;bottom:24px;height:28px;background:transparent;z-index:4}
+  #track{position:absolute;left:0;right:0;top:11px;height:6px;background:#333}
+  #fill{display:block;height:100%;width:0;background:#fff}
+  #time{position:fixed;right:12px;bottom:40px;font-size:14px;z-index:4}
+  #log{display:none}
+  #menu,#homebtn,#fitbtn,#fsbtn{
+    height:52px;border:1px solid rgba(255,255,255,.35);border-radius:10px;box-sizing:border-box;
+    background:rgba(0,0,0,.6);color:#fff;font-size:26px;font-family:sans-serif;
+  }
+  #menu{position:fixed;top:12px;left:12px;z-index:30;width:52px}
+  #topr{position:fixed;top:12px;right:12px;z-index:30;display:flex;gap:10px}
+  #homebtn{display:none;text-decoration:none;align-items:center;gap:8px;padding:0 18px;font-size:22px;font-weight:bold}
+  #homebtn b{font-size:32px;line-height:1}
+  #fitbtn,#fsbtn{display:none;padding:0 16px;font-size:20px}
+  #screen,#hscreen,#freeze,#v{object-fit:var(--fit,contain)}
+  #side{
+    position:fixed;top:0;left:0;bottom:0;width:440px;max-width:94vw;background:#141414;z-index:20;
+    transform:translateX(-110%);transition:transform .2s;display:flex;flex-direction:column;
+    pointer-events:none;
+  }
+  #side.on{transform:translateX(0);pointer-events:auto}
+  #panel{flex:1;overflow:auto;padding:14px 14px 24px}
+  #panel-title{font-size:22px;font-weight:bold;margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid #333}
+  .row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #333}
+  .row p{margin:0;flex:1}
+  .row b{display:block}
+  .row small{color:#aaa}
+  .row i{min-width:64px;text-align:center;font-style:normal;font-size:20px}
+  .row button{width:40px;height:40px;border:0;border-radius:8px;background:#333;color:#fff;font-size:22px}
+  .row button.wide{width:auto;padding:0 14px;font-size:16px}
+  .row2{padding:10px 0;border-bottom:1px solid #333}
+  .row2 p{margin:0 0 8px}
+  .row2 b{display:block}
+  .row2 small{color:#aaa}
+  .opts{display:flex;flex-wrap:wrap;gap:6px}
+  .opts button{min-width:56px;height:40px;padding:0 12px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
+  .opts button.on{background:#fff;color:#000}
+  #resetcfg{width:100%;height:44px;margin-top:10px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
+  #logbox{white-space:pre-wrap;font:12px/1.4 monospace;color:#ddd}
+  #nexts a, #nexts a:visited, #nexts a:hover{color:#fff;text-decoration:none}
+  #savecfg{width:100%;height:48px;margin-top:16px;border:0;border-radius:8px;background:#fff;color:#000;font-size:18px}
+  #freeze{position:fixed;inset:0;width:100%;height:100%;display:none;z-index:2;background:#000}
+  #pp{
+    position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:13;display:none;
+    width:130px;height:130px;border-radius:50%;border:3px solid rgba(255,255,255,.85);
+    background:rgba(0,0,0,.55);color:#fff;font-size:56px;line-height:1;padding:0;
+  }
+  #nexts a span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+</style>
+<img id="v" alt="">
+<canvas id="screen"></canvas>
+<canvas id="hscreen"></canvas>
+<canvas id="freeze"></canvas>
+<div id="hud"></div>
+<div id="overlay">
+  <div id="msg">Loading...</div>
+  <div id="ver" style="position:fixed;left:12px;bottom:12px;z-index:40;color:#aaa;font-size:13px">__VER__</div>
+<button id="go" type="button">&#9654;</button>
+</div>
+<button id="pp" type="button">&#10074;&#10074;</button>
+<div id="prog"><div id="track"><i id="fill"></i></div></div>
+<div id="time"></div>
+<button id="menu" type="button">&#9881;</button>
+<div id="topr">
+<button id="fsbtn" type="button">Schermo intero</button>
+<button id="fitbtn" type="button">Adatta</button>
+<a id="homebtn" href="/home"><b>&#8962;</b>Home</a>
+</div>
+<div id="side">
+  <div id="panel"></div>
+</div>
+<div id="log"></div>
+<div id="nexts" style="display:none;position:fixed;left:8px;right:8px;bottom:54px;z-index:12;gap:8px;overflow:auto;background:rgba(0,0,0,.55);padding:6px"></div>
+<script>
+var DURATION = __DUR__;
+var FPS = __FPS__;
+var VID = 'WATCHID';
+var IS_LIVE = __LIVE__ === 1;
+var BUF_SEC = 15;
+var BUF_CAP = 6000;
+var rateMb = 0;
+var serverFrames = 0;
+var syncOrigin = 0;
+var playOrigin = 0;
+var stalled = false;
+var startAt = __START__;
+var pos = startAt;
+var playing = false;
+var tick = null;
+var gen = 0;
+var warmV = null;
+var warmA = null;
+var screen = document.getElementById('screen');
+var vAbort = null;
+var frames = [];
+var playTimer = null;
+var vUrl = null;
+var freezeC = document.getElementById('freeze');
+var overlay = document.getElementById('overlay');
+var actx = null;
+var audioAbort = null;
+var audioNext = 0;
+var audioOn = false;
+var audioCursor = 0;
+var msg = document.getElementById('msg');
+var go = document.getElementById('go');
+var ppLabel = 'pausa';
+var audioBase = 0;
+var shownFrames = 0;
+var drawnT = 0;
+var painting = false;
+var paintGen = 0;
+var frameBase = 0;
+var vEnded = false;
+// il codice e' stato aperto su un altro schermo: qui ci si ferma
+var kickedShown = false;
+function showKicked(){
+  if (kickedShown) return;
+  kickedShown = true;
+  gen++;
+  if (fillWait) clearInterval(fillWait);
+  stopVideo();
+  stopAudio();
+  stopClock();
+  overlay.style.display = 'flex';
+  msg.style.display = 'block';
+  go.style.display = 'none';
+  msg.innerHTML = 'Questo codice è in uso su un altro schermo.<br><br>' +
+    '<button id="takeback" type="button" style="font-size:24px;padding:12px 22px;border:0;border-radius:10px;background:#fff;color:#000">Guarda qui</button>';
+  document.getElementById('takeback').onclick = function(ev){ ev.stopPropagation(); location.reload(); };
+}
+function ck(r){
+  if (r && r.status === 409) { showKicked(); throw new Error('in uso altrove'); }
+  return r;
+}
+function statusLine(){
+  if (vmode === 'h264' && hs) {
+    return 'H.264' + (rateMb ? ' ' + rateMb.toFixed(2) + ' MB/s' : '') + NL + 'video pronto ' + Math.max(0, hAhead()).toFixed(1) + ' s';
+  }
+  var slow = rateMb > 0 && rateMb < 1;
+  var head = slow ? ('Linea lenta ' + rateMb.toFixed(2) + ' MB/s') : (rateMb ? (rateMb.toFixed(2) + ' MB/s') : 'misuro la linea');
+  return head + '\n' + 'browser ' + frames.length + ' frame' + '\n' + 'server ' + serverFrames + ' frame';
+}
+function showStatus(extra){
+  overlay.style.display = 'flex';
+  msg.style.display = 'block';
+  go.style.display = 'none';
+  msg.textContent = statusLine() + (extra ? '\n' + extra : '');
+}
+var rateAt = 0;
+function pollRate(){
+  var now = Date.now();
+  if (now - rateAt < 1000) return;
+  rateAt = now;
+  fetch('/buf').then(ck).then(function(r){ return r.text(); }).then(function(t){
+    var p = t.split(' ');
+    var bits = (p[0] || '').split('/');
+    serverFrames = parseInt(bits[0], 10) || 0;
+    var v = parseFloat(p[1]);
+    if (!isNaN(v) && v > 0) rateMb = v;
+    var hud = document.getElementById('hud');
+    if (hud) {
+      var desync = '';
+      if (actx && audioArm && drawnT > 0) {
+        var ear = earTime();
+        var diff = ear - drawnT;
+        if (Math.abs(diff) > 0.15) desync = (diff > 0 ? '  audio avanti ' : '  video avanti ') + Math.abs(diff).toFixed(1) + 's';
+        else desync = '  sync ok';
+      }
+      var fps = '';
+      if (vmode === 'h264' && hs && hs.started && !userPaused && !stalled) {
+        fps = '  ' + hs.fps.toFixed(0) + ' fps (video ' + (1 / hs.dur).toFixed(0) + ')' + (hs.lateNow ? '  saltati ' + hs.lateNow : '');
+      }
+      var au = '  audio ' + (actx ? actx.state : 'assente') + ' ' + aDiag.kb.toFixed(0) + 'KB ' + aDiag.blk + 'blk ' + aDiag.sched + 'prog' + (aDiag.err ? ' ' + aDiag.err + 'err' : '') + (audioHold.length ? ' attesa ' + audioHold.length : '');
+      hud.textContent = (vmode === 'h264' && hs ? 'H.264 pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'browser ' + frames.length) + fps + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync + au;
+    }
+  }).catch(function(){});
+}
+function ui(line){
+  try { fetch('/clog?m=' + encodeURIComponent(String(line).slice(0, 200))).catch(function(){}); } catch (e) {}
+  var box = document.getElementById('log');
+  var row = document.createElement('div');
+  row.textContent = line;
+  box.appendChild(row);
+  while (box.childNodes.length > 8) box.removeChild(box.childNodes[1]);
+}
+
+function fmt(s){
+  s = Math.max(0, Math.floor(s));
+  var m = Math.floor(s/60), r = s%60;
+  return m + ':' + (r<10?'0':'') + r;
+}
+function draw(){
+  if (IS_LIVE) {
+    document.getElementById('prog').style.display = 'none';
+    document.getElementById('time').textContent = '\u25cf LIVE';
+    document.getElementById('time').style.color = '#f00';
+    return;
+  }
+  var p = DURATION ? Math.min(100, (pos/DURATION)*100) : 0;
+  document.getElementById('fill').style.width = p + '%';
+  document.getElementById('time').textContent = fmt(pos) + ' / ' + fmt(DURATION);
+}
+function pollDur(){
+  if (DURATION || IS_LIVE) return;
+  fetch('/dur').then(function(r){ return r.text(); }).then(function(t){
+    var d = parseInt(t, 10) || 0;
+    if (d === -1) { IS_LIVE = true; draw(); }
+    else if (d > 0) { DURATION = d; draw(); }
+    else setTimeout(pollDur, 1500);
+  }).catch(function(){ setTimeout(pollDur, 3000); });
+}
+pollDur();
+var titleTries = 0;
+function pollTitle(){
+  if (document.title && document.title !== 'drive-tube') return;
+  if (++titleTries > 20) return;
+  fetch('/title').then(function(r){ return r.text(); }).then(function(t){
+    if (t) document.title = t;
+    else setTimeout(pollTitle, 1500);
+  }).catch(function(){ setTimeout(pollTitle, 3000); });
+}
+pollTitle();
+function startClock(){
+  playing = true;
+  if (tick) clearInterval(tick);
+  tick = setInterval(function(){
+    if (!playing) return;
+    if (!IS_LIVE && DURATION && pos > DURATION) pos = DURATION;
+    draw();
+    if (!IS_LIVE) history.replaceState(null, '', '/?watch=' + VID + '&t=' + Math.floor(pos));
+  }, 1000);
+}
+function stopClock(){ playing = false; }
+function stopWarm(){
+  if (warmV) { warmV.abort(); warmV = null; }
+  if (warmA) { warmA.abort(); warmA = null; }
+}
+function preload(auto){
+  var my = ++gen;
+  stopWarm();
+  overlay.style.display = 'flex';
+  msg.style.display = 'block';
+  msg.textContent = 'Loading...';
+  go.style.display = 'none';
+  screen.style.display = 'none';
+  stopVideo();
+  stopAudio();
+  stopClock();
+  draw();
+  fetch('/prime').catch(function(){});
+  function poll(){
+    if (my !== gen) return;
+    fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
+      if (my !== gen) return;
+      if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
+        msg.textContent = err;
+        go.style.display = 'block';
+        ui(err);
+        return;
+      }
+      if (err) { setTimeout(poll, 800); return; }
+      fetch('/ready').then(function(r){ return r.text(); }).then(function(t){
+        if (my !== gen) return;
+        if (t === 'ok') { msg.textContent = 'In attesa del play'; go.style.display = 'block'; }
+        else setTimeout(poll, 800);
+      });
+    }).catch(function(){ if (my === gen) setTimeout(poll, 1000); });
+  }
+  poll();
+}
+function stopVideo(){
+  hStop();
+  paintGen++;
+  painting = false;
+  if (vAbort) { vAbort.abort(); vAbort = null; }
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  frames = [];
+  vEnded = false;
+  if (vUrl) { URL.revokeObjectURL(vUrl); vUrl = null; }
+}
+function findBytes(u8, a, b, from){
+  for (var i = from || 0; i < u8.length - 1; i++)
+    if (u8[i] === a && u8[i + 1] === b) return i;
+  return -1;
+}
+function startVideoBuf(){
+  stopVideo();
+  var ctrl = new AbortController();
+  vAbort = ctrl;
+  var my = gen;
+  var pending = new Uint8Array(0);
+  var started = false;
+  screen.style.display = 'none';
+  fetch('/stream.mjpg?t=' + Date.now(), {signal: ctrl.signal}).then(ck).then(function(res){
+    var reader = res.body.getReader();
+    function read(){
+      return reader.read().then(function(r){
+        if (r.done && !ctrl.signal.aborted && my === gen) { vEnded = true; return; }
+        if (r.done || ctrl.signal.aborted || my !== gen) return;
+        pending = concatU8(pending, r.value);
+        while (true) {
+          var s = findBytes(pending, 0xff, 0xd8, 0);
+          var e = s < 0 ? -1 : findBytes(pending, 0xff, 0xd9, s + 2);
+          if (s < 0 || e < 0) {
+            if (s > 0) pending = pending.slice(s);
+            break;
+          }
+          frames.push(pending.slice(s, e + 2));
+          pending = pending.slice(e + 2);
+        }
+        if (pending.length > 1500000) pending = pending.slice(-2000);
+        if (frames.length >= BUF_CAP) {
+          return new Promise(function(ok){ setTimeout(ok, 200); }).then(read);
+        }
+        return read();
+      });
+    }
+    return read();
+  }).catch(function(){});
+}
+var audioUrl = '';
+function stallPlay(reason){
+  if (!stalled) {
+    stalled = true;
+    stopClock();
+    if (actx && actx.state === 'running') actx.suspend();
+  }
+  showStatus(reason || ('fermo, restano ' + (frames.length / FPS).toFixed(1) + 's di frame'));
+}
+function resumePlay(){
+  stalled = false;
+  overlay.style.display = 'none';
+  if (!userPaused) startClock();
+}
+function sliceBuf(buf, skipSec){
+  var rate = buf.sampleRate;
+  var skip = Math.floor(skipSec * rate);
+  var len = buf.length - skip;
+  if (len < 200) return null;
+  var out = actx.createBuffer(buf.numberOfChannels, len, rate);
+  for (var c = 0; c < buf.numberOfChannels; c++) out.getChannelData(c).set(buf.getChannelData(c).subarray(skip));
+  return out;
+}
+function scheduleBuf(buf){
+  if (!buf) return;
+  if (!audioArm || !actx) { if (audioHold.length < 120) { audioHold.push(buf); if (actx) audioNext = actx.currentTime + audioHold.reduce(function(s,b){ return s + b.duration; }, 0); } return; }
+  var frameT = drawnT;
+  if (audioCursor + 0.4 < frameT) {
+    var late = frameT - audioCursor;
+    if (buf.duration <= late) { audioCursor += buf.duration; return; }
+    var cut = sliceBuf(buf, late);
+    audioCursor += late;
+    buf = cut;
+    if (!buf) return;
+  }
+  var when = syncOrigin + audioCursor;
+  if (when < actx.currentTime - 0.2) { audioCursor += buf.duration; return; }
+  var src = actx.createBufferSource();
+  src.buffer = buf;
+  src.connect(actx.destination);
+  // un blocco gia' in ritardo non si sposta avanti (si sovrapporrebbe al
+  // successivo): si salta la parte gia' passata, cosi' i blocchi restano attaccati
+  var skip = 0;
+  if (when < actx.currentTime + 0.02) { skip = actx.currentTime + 0.02 - when; when += skip; }
+  // finito di suonare, il blocco esce dalla lista: senza questo tutto l'audio
+  // decodificato restava in memoria fino al salto successivo (circa 1 GB in 45 minuti)
+  src.onended = function(){
+    var i = audioSources.indexOf(src);
+    if (i >= 0) audioSources.splice(i, 1);
+    src.disconnect();
+  };
+  try {
+    src.start(when, Math.min(skip, Math.max(0, buf.duration - 0.001))); audioSources.push(src);
+    aDiag.sched++;
+    if (!aDiag.firstSched) { aDiag.firstSched = true; ui('audio: primo blocco tra ' + (when - actx.currentTime).toFixed(2) + 's, contesto ' + actx.state); }
+  } catch (e) { ui('audio: start fallito (' + e + ')'); }
+  audioCursor += buf.duration;
+  audioNext = syncOrigin + audioCursor;
+}
+function flushHeldAudio(){
+  if (!audioArm || !audioHold.length) return;
+  var pending = audioHold;
+  audioHold = [];
+  for (var i = 0; i < pending.length; i++) scheduleBuf(pending[i]);
+}
+function earTime(){
+  if (!actx || !audioArm) return drawnT;
+  return actx.currentTime - syncOrigin;
+}
+function holdEar(){
+  var ear = earTime();
+  if (!actx || userPaused || stalled) return ear;
+  if (ear > drawnT + 0.12) {
+    if (actx.state === 'running') actx.suspend();
+    ear = earTime();
+  } else if (actx.state === 'suspended' && drawnT >= ear - 0.03) {
+    actx.resume();
+    ear = earTime();
+  }
+  return ear;
+}
+function audioMustWait(){
+  if (!actx || !audioOn || !audioArm) return false;
+  flushHeldAudio();
+  if (audioCursor + 0.2 < drawnT) return true;
+  return false;
+}
+function showVideo(){
+  screen.style.display = 'block';
+  freezeC.style.display = 'none';
+  overlay.style.display = 'none';
+  stalled = false;
+  startClock();
+  draw();
+  shownFrames = 0;
+  drawnT = 0;
+  frameBase = pos;
+  painting = false;
+  paintGen++;
+  if (playTimer) clearInterval(playTimer);
+  playTimer = setInterval(function(){
+    if (userPaused) {
+      if (actx && actx.state === 'running') actx.suspend();
+      var hud = document.getElementById('hud');
+      if (hud) hud.textContent = 'pausa, buffer ' + frames.length + ' frame';
+      return;
+    }
+    pollRate();
+    if (frames.length < FPS * 5 && !vEnded) {
+      stallPlay();
+      showStatus('buffer ' + frames.length + ', carico');
+      return;
+    }
+    if (actx && audioArm && audioOn && !userPaused) {
+      var ear = earTime();
+      if (ear > drawnT + 0.5 && frames.length > FPS * 2) {
+        overlay.style.display = 'flex';
+        msg.style.display = 'block';
+        msg.textContent = 'riallineamento in corso';
+        go.style.display = 'none';
+        while (frames.length > 2 && drawnT + 1/FPS < ear - 0.1) {
+          frames.shift();
+          drawnT += 1/FPS;
+          shownFrames++;
+        }
+        pos = frameBase + drawnT;
+        draw();
+        if (Math.abs(ear - drawnT) < 0.3) overlay.style.display = 'none';
+        return;
+      } else if (overlay.style.display === 'flex' && msg.textContent === 'riallineamento in corso') {
+        overlay.style.display = 'none';
+      }
+    }
+    if (stalled) {
+      if (frames.length < FPS * 10 && !vEnded) {
+        showStatus('fermo a ' + frames.length + ', carico buffer');
+        return;
+      }
+      resumePlay();
+      playOrigin = performance.now() - drawnT * 1000;
+      // durante lo stallo actx era sospeso: orologio audio e video fermi insieme,
+      // quindi l'audio gia' programmato e' ancora allineato. Basta ripartire.
+      if (actx && audioOn && actx.state === 'suspended' && earTime() <= drawnT + 0.12) actx.resume();
+    }
+    if (audioHold.length && audioArm) flushHeldAudio();
+    if (painting) return;
+    var elapsed = (performance.now() - playOrigin) / 1000;
+    if (drawnT + 1 / FPS > elapsed + 0.04) return;
+    while (frames.length > 2 && drawnT + 2 / FPS < elapsed) {
+      frames.shift();
+      drawnT += 1 / FPS;
+    }
+    if (!frames.length) {
+      if (vEnded) {
+        clearInterval(playTimer);
+        playTimer = null;
+        stopClock();
+        draw();
+        showNext(true);
+      }
+      return;
+    }
+    var jpg = frames.shift();
+    shownFrames++;
+    var token = ++paintGen;
+    painting = true;
+    createImageBitmap(new Blob([jpg], {type: 'image/jpeg'})).then(function(bmp){
+      painting = false;
+      if (token !== paintGen) { bmp.close && bmp.close(); return; }
+      if (screen.width !== bmp.width) {
+        screen.width = bmp.width;
+        screen.height = bmp.height;
+      }
+      screen.getContext('2d').drawImage(bmp, 0, 0);
+      bmp.close && bmp.close();
+      drawnT += 1 / FPS;
+      pos = frameBase + drawnT;
+      draw();
+      if (!userPaused && !stalled) holdEar();
+    }).catch(function(){ painting = false; });
+  }, 1000 / FPS);
+  syncOrigin = actx ? actx.currentTime : 0;
+  audioArm = true;
+  audioCursor = 0;
+  playOrigin = performance.now();
+  flushHeldAudio();
+}
+function hold(){
+  stopClock();
+  if (screen.width) {
+    freezeC.width = screen.width;
+    freezeC.height = screen.height;
+    freezeC.getContext('2d').drawImage(screen, 0, 0);
+    freezeC.style.display = 'block';
+  }
+}
+function ensureCtx(){
+  if (!actx) {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    try { actx = new AC({sampleRate: 48000}); } catch (e) { actx = new AC(); }
+    aDiag.ctx = actx.state;
+    ui('audio creato: ' + actx.state + ', ' + actx.sampleRate + ' Hz');
+    actx.onstatechange = function(){ aDiag.ctx = actx.state; ui('audio: ' + actx.state + ' a ' + actx.currentTime.toFixed(2) + 's'); };
+  }
+  // un suono muto fatto partire dentro il tocco sblocca l'audio anche nei
+  // browser piu' severi
+  try {
+    var b = actx.createBuffer(1, 1, actx.sampleRate), s = actx.createBufferSource();
+    s.buffer = b; s.connect(actx.destination); s.start(0);
+  } catch (e) {}
+  if (actx.state !== 'suspended') return Promise.resolve();
+  // resume() che non si risolve mai (succede) non deve bloccare l'avvio
+  return Promise.race([
+    actx.resume().catch(function(e){ ui('audio resume rifiutato: ' + e); }),
+    new Promise(function(ok){ setTimeout(ok, 1500); })
+  ]);
+}
+// diagnostica audio, mostrata in alto e mandata al log del server
+var aDiag = {ctx: '-', kb: 0, blk: 0, err: 0, sched: 0, firstData: false, firstSched: false};
+// audio che dovrebbe suonare ma il browser lo tiene spento: si riaccende al
+// primo tocco sullo schermo (riaccenderlo fuori da un tocco puo' non funzionare)
+function audioShouldRun(){
+  return actx && audioOn && audioArm && playTimer && !userPaused && !stalled && actx.state === 'suspended';
+}
+['pointerdown', 'touchend', 'click'].forEach(function(evn){
+  document.addEventListener(evn, function(){
+    if (audioShouldRun()) { actx.resume(); ui('audio riacceso dal tocco (' + evn + ')'); }
+  }, true);
+});
+var audioHold = [];
+var audioSources = [];
+var audioArm = null;
+function stopAudio(){
+  audioOn = false;
+  audioArm = null;
+  if (audioAbort) { audioAbort.abort(); audioAbort = null; }
+  audioNext = 0;
+  audioCursor = 0;
+  audioHold = [];
+  for (var i = 0; i < audioSources.length; i++) {
+    try { audioSources[i].stop(); } catch (e) {}
+  }
+  audioSources = [];
+  // il contesto resta acceso: fermarlo qui obbligava a riaccenderlo fuori da un
+  // tocco, e alcuni browser (Tesla compreso) a volte non lo permettono: il video
+  // restava fermo sul primo frame finche' non si toccava la barra
+}
+function concatU8(a, b){
+  var c = new Uint8Array(a.length + b.length);
+  c.set(a, 0); c.set(b, a.length);
+  return c;
+}
+// --- MP3 a pezzi senza buchi ---
+// Divide lo stream nei suoi frame reali (lunghezza calcolata dall'intestazione,
+// niente falsi inizi dentro i dati) e decodifica blocchi di circa un secondo.
+// Ogni blocco porta con se' gli ultimi MP3_PRE frame del blocco precedente:
+// servono al decoder (serbatoio di bit e sovrapposizione tra frame) e il loro
+// suono viene scartato. L'ultimo frame di ogni blocco non si usa e diventa il
+// primo del blocco dopo, cosi' anche la fine del blocco e' pulita.
+var MP3_SR = [[44100, 48000, 32000], [22050, 24000, 16000], [11025, 12000, 8000]];
+var MP3_BR1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+var MP3_BR2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+var MP3_PRE = 4, MP3_BLOCK = 40;
+function mp3Frame(u8, i){
+  if (i + 4 > u8.length || u8[i] !== 0xFF || (u8[i + 1] & 0xE0) !== 0xE0) return null;
+  var ver = (u8[i + 1] >> 3) & 3, layer = (u8[i + 1] >> 1) & 3;
+  if (ver === 1 || layer !== 1) return null;
+  var bri = u8[i + 2] >> 4, sri = (u8[i + 2] >> 2) & 3, pad = (u8[i + 2] >> 1) & 1;
+  if (bri === 0 || bri === 15 || sri === 3) return null;
+  var v = ver === 3 ? 0 : (ver === 2 ? 1 : 2);
+  var sr = MP3_SR[v][sri], br = (v === 0 ? MP3_BR1 : MP3_BR2)[bri] * 1000;
+  return {len: Math.floor((v === 0 ? 144 : 72) * br / sr) + pad, sr: sr, spf: v === 0 ? 1152 : 576};
+}
+// primo frame valido da i in poi, confermato dal frame successivo
+function mp3Sync(u8, i){
+  for (; i + 4 <= u8.length; i++) {
+    var f = mp3Frame(u8, i);
+    if (!f) continue;
+    if (i + f.len + 4 > u8.length) return i;
+    if (mp3Frame(u8, i + f.len)) return i;
+  }
+  return -1;
+}
+// stato: {pend: byte non ancora usati, pre: byte dei frame da riusare, npre}
+function mp3Chunker(){ return {pend: new Uint8Array(0), pre: new Uint8Array(0), npre: 0, synced: false, sr: 0, spf: 1152}; }
+// aggiunge byte; ritorna un blocco pronto da decodificare oppure null
+// blocco: {bytes, dropHead (s), dropTail (s)}
+function mp3Take(st, chunk, last){
+  if (chunk && chunk.length) st.pend = st.pend.length ? concatU8(st.pend, chunk) : chunk;
+  var u = st.pend, o = 0;
+  if (!st.synced) {
+    o = mp3Sync(u, 0);
+    if (o < 0) { if (u.length > 8192) st.pend = u.slice(-4); return null; }
+    st.synced = true;
+  }
+  var starts = [];
+  while (true) {
+    var f = mp3Frame(u, o);
+    if (!f) {
+      if (o + 4 > u.length) break;
+      var s = mp3Sync(u, o + 1);
+      if (s < 0) break;
+      o = s;
+      continue;
+    }
+    if (o + f.len > u.length) break;
+    st.sr = f.sr; st.spf = f.spf;
+    starts.push(o);
+    o += f.len;
+    if (!last && starts.length > MP3_BLOCK) break;
+  }
+  var n = starts.length;
+  if (!last && n <= MP3_BLOCK) {
+    if (starts.length) st.pend = u.subarray(starts[0]);
+    return null;
+  }
+  if (!n) return null;
+  // usati: tutti i frame tranne l'ultimo (salvo a fine stream)
+  var useEnd = last ? o : starts[n - 1];
+  var body = u.subarray(starts[0], o);
+  var bytes = st.pre.length ? concatU8(st.pre, body) : body.slice();
+  var fdur = st.spf / st.sr;
+  var blk = {bytes: bytes, dropHead: st.npre * fdur, dropTail: last ? 0 : fdur, sr: st.sr};
+  // prossimo prefisso: ultimi MP3_PRE frame usati
+  var usedStarts = last ? starts : starts.slice(0, n - 1);
+  var k = Math.min(MP3_PRE, usedStarts.length);
+  st.pre = u.slice(usedStarts[usedStarts.length - k], useEnd);
+  st.npre = k;
+  st.pend = last ? new Uint8Array(0) : u.subarray(useEnd);
+  return blk;
+}
+// taglia testa e coda del suono decodificato (in secondi)
+function mp3Trim(ctx, buf, head, tail){
+  var rate = buf.sampleRate;
+  var a = Math.round(head * rate), b = buf.length - Math.round(tail * rate);
+  if (b - a < 64) return null;
+  if (a === 0 && b === buf.length) return buf;
+  var out = ctx.createBuffer(buf.numberOfChannels, b - a, rate);
+  for (var c = 0; c < buf.numberOfChannels; c++) out.getChannelData(c).set(buf.getChannelData(c).subarray(a, b));
+  return out;
+}
+
+function playAudioStream(url){
+  stopAudio();
+  var ctrl = new AbortController();
+  audioAbort = ctrl;
+  audioOn = true;
+  var pending = new Uint8Array(0);
+  var started = false;
+  var my = gen;
+  function armVideo(){
+    if (started || my !== gen) return;
+    started = true;
+    showVideo();
+  }
+  return ensureCtx().then(function(){
+    audioNext = actx.currentTime + 0.25;
+    ui('audio: chiedo lo stream, contesto ' + actx.state);
+    return fetch(url, {signal: ctrl.signal});
+  }).then(ck).then(function(res){
+    ui('audio: risposta ' + res.status + ' ' + (res.headers.get('Content-Type') || '') + (res.body ? '' : ' (senza body)'));
+    if (!res.ok) { ui('audio: stream mp3 rifiutato (' + res.status + ')'); armVideo(); return; }
+    aDiag.kb = 0; aDiag.blk = 0; aDiag.err = 0; aDiag.sched = 0; aDiag.firstData = false; aDiag.firstSched = false;
+    var reader = res.body.getReader();
+    var st = mp3Chunker();
+    function decodeBlk(blk){
+      var b = blk.bytes;
+      return actx.decodeAudioData(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)).then(function(buf){
+        if (ctrl.signal.aborted || my !== gen) return;
+        aDiag.blk++;
+        var t = mp3Trim(actx, buf, blk.dropHead, blk.dropTail);
+        if (t) scheduleBuf(t);
+      }).catch(function(e){
+        aDiag.err++;
+        if (aDiag.err <= 2) ui('audio: decodifica fallita (' + (e && e.message ? e.message : e) + ')');
+      });
+    }
+    // decodifica in ordine tutti i blocchi pronti
+    function drain(chunk, last){
+      var blk = mp3Take(st, chunk, last);
+      if (!blk) return Promise.resolve();
+      return decodeBlk(blk).then(function(){
+        if (last || ctrl.signal.aborted || my !== gen) return;
+        return drain(null, false);
+      });
+    }
+    function read(){
+      if (actx && audioNext - actx.currentTime > 8) {
+        return new Promise(function(ok){ setTimeout(ok, 300); }).then(read);
+      }
+      return reader.read().then(function(r){
+        if (ctrl.signal.aborted || my !== gen) return;
+        if (r.done) return drain(null, true);
+        aDiag.kb += r.value.length / 1024;
+        if (!aDiag.firstData) { aDiag.firstData = true; ui('audio: primi dati mp3, contesto ' + actx.state); }
+        return drain(r.value, false).then(read);
+      });
+    }
+    return read();
+  }).catch(function(e){
+    if (!ctrl.signal.aborted && my === gen) ui('audio: stream interrotto (' + (e && e.message ? e.message : e) + ', ' + aDiag.kb.toFixed(0) + ' KB)');
+  });
+}
+function startBoth(){
+  stopWarm();
+  var t = Date.now();
+  if (startAt) pos = startAt;
+  overlay.style.display = 'flex';
+  msg.style.display = 'block';
+  msg.textContent = 'Caricamento buffer 0';
+  go.style.display = 'none';
+  fetch('/ctrl?pos=' + (startAt || pos || 0)).then(function(){
+    audioUrl = '/stream.mp3?t=' + t;
+    playAudioStream(audioUrl);
+    startVideoBuf();
+  });
+    var watch = setInterval(function(){
+      fetch('/status').then(function(r){ return r.text(); }).then(function(err){
+        if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) { msg.textContent = err; ui(err); clearInterval(watch); }
+      });
+      fetch('/buf').then(function(r){ return r.text(); }).then(function(t){
+        var parts = t.split(' ');
+        var n = parseInt(parts[0], 10) || 0;
+        var rate = parseFloat(parts[1]) || 0;
+        var slow = rate > 0 && rate < 1;
+        var need = slow ? FPS * 12 : FPS * 4;
+        msg.style.display = 'block';
+        msg.textContent = (slow ? 'Linea lenta ' + rate.toFixed(1) + ' MB/s — ' : '') + 'Caricamento buffer ' + parts[0];
+        if (n >= need && go.style.display === 'none') {
+          go.style.display = 'block';
+          ui('pronto');
+        }
+      });
+    }, 1000);
+}
+var userPaused = false;
+var clickAt = 0;
+function showNext(on){
+  document.getElementById('nexts').style.display = on ? 'flex' : 'none';
+  if (on) loadNext();
+}
+// comandi sopra il video: suggerimenti, home e pulsante pausa/play al centro
+var chromeOn = false, ctlTimer = null;
+var ppBtn = document.getElementById('pp');
+function ctlGlyph(){ ppBtn.innerHTML = userPaused ? '&#9654;' : '&#10074;&#10074;'; }
+function showControls(autoHideMs){
+  chromeOn = true;
+  showNext(true);
+  document.getElementById('homebtn').style.display = 'flex';
+  document.getElementById('fitbtn').style.display = 'block';
+  if (fsOk) document.getElementById('fsbtn').style.display = 'block';
+  ctlGlyph();
+  ppBtn.style.display = 'block';
+  if (ctlTimer) { clearTimeout(ctlTimer); ctlTimer = null; }
+  if (!userPaused) ctlTimer = setTimeout(hideControls, autoHideMs || 5000);
+}
+function hideControls(){
+  if (ctlTimer) { clearTimeout(ctlTimer); ctlTimer = null; }
+  if (userPaused) return;
+  chromeOn = false;
+  showNext(false);
+  document.getElementById('homebtn').style.display = 'none';
+  document.getElementById('fitbtn').style.display = 'none';
+  document.getElementById('fsbtn').style.display = 'none';
+  ppBtn.style.display = 'none';
+}
+// come riempire lo schermo: adatta (bande nere), riempi (taglia i lati), stira
+var FITS = [['contain', 'Adatta'], ['cover', 'Riempi'], ['fill', 'Stira']];
+var fitIdx = 0;
+try { fitIdx = Math.max(0, FITS.map(function(f){ return f[0]; }).indexOf(localStorage.getItem('dt_fit'))); } catch (e) {}
+function applyFit(){
+  document.documentElement.style.setProperty('--fit', FITS[fitIdx][0]);
+  document.getElementById('fitbtn').textContent = FITS[fitIdx][1];
+}
+applyFit();
+document.getElementById('fitbtn').onclick = function(ev){
+  ev.stopPropagation();
+  fitIdx = (fitIdx + 1) % FITS.length;
+  applyFit();
+  try { localStorage.setItem('dt_fit', FITS[fitIdx][0]); } catch (e) {}
+  showControls();
+};
+// schermo intero del browser, dove e' disponibile
+var docEl = document.documentElement;
+var fsOk = !!(docEl.requestFullscreen || docEl.webkitRequestFullscreen);
+function fsActive(){ return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+function fsLabel(){ document.getElementById('fsbtn').textContent = fsActive() ? 'Esci schermo intero' : 'Schermo intero'; }
+document.getElementById('fsbtn').onclick = function(ev){
+  ev.stopPropagation();
+  try {
+    if (fsActive()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else (docEl.requestFullscreen || docEl.webkitRequestFullscreen).call(docEl);
+  } catch (e) {}
+  setTimeout(fsLabel, 300);
+  showControls();
+};
+document.addEventListener('fullscreenchange', fsLabel);
+document.addEventListener('webkitfullscreenchange', fsLabel);
+ppBtn.onclick = function(ev){
+  ev.stopPropagation();
+  togglePlay();
+};
+function togglePlay(){
+  var now = Date.now();
+  if (now - clickAt < 700) return;
+  clickAt = now;
+  if (go.style.display !== 'none') { startBoth(); return; }
+  fetch('/ctrl?pause=1').then(ck).then(function(r){ return r.text(); }).then(function(t){
+    if (t === 'paused') {
+      if (hs && hs.started && !stalled) hs.holdT = hClock();
+      userPaused = true;
+      stopClock();
+      if (actx && actx.state === 'running') actx.suspend();
+      showControls();
+      ui('pausa');
+    } else {
+      userPaused = false;
+      showControls(2500);
+      if (actx && actx.state === 'suspended') actx.resume();
+      flushHeldAudio();
+      startClock();
+      playOrigin = performance.now() - drawnT * 1000;
+      if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
+      ui('ripresa, buffer ' + frames.length);
+    }
+  }).catch(function(){
+    if (!userPaused && hs && hs.started && !stalled) hs.holdT = hClock();
+    userPaused = !userPaused;
+    if (userPaused) {
+      stopClock();
+      if (actx && actx.state === 'running') actx.suspend();
+      showControls();
+    } else {
+      showControls(2500);
+      if (actx && actx.state === 'suspended') actx.resume();
+      flushHeldAudio();
+      startClock();
+      playOrigin = performance.now() - drawnT * 1000;
+      if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
+    }
+  });
+}
+// ================= H.264 =================
+// Il server manda il video H.264 originale di YouTube, un record per frame:
+// [lunghezza u32][pts f64 in secondi][frame Annex-B]. Il browser lo decodifica
+// con FFmpeg compilato in WebAssembly e lo disegna con WebGL. L'orologio e'
+// l'audio: si mostra sempre il frame del momento in cui e' l'audio.
+// I frame tra il keyframe e il punto di partenza (pts < X) si decodificano
+// ma non si mostrano. Il video resta compresso in memoria (pochi MB) e si
+// decodifica un frame alla volta, quando serve.
+var VMODE_CFG = __VMODE__;
+var vmode = VMODE_CFG ? 'h264' : 'mjpeg';
+var mjCanvas = screen;
+var hCanvas = document.getElementById('hscreen');
+var hs = null;
+var hWasm = null, hMem = null, hReady = null;
+var hOnFrame = function(){};
+var H_START = 3, H_STALL = 0.5, H_RESUME = 4, H_AHEAD = 120;
+// Linea lenta: a ogni blocco per caricamento si aspetta un buffer piu' lungo
+// prima di ripartire (4, 12, 20, 28, poi 30 s), e anche i video successivi
+// partono con piu' margine. Vale per tutta la pagina.
+var hStalls = 0;
+function hResumeNeed(){ return Math.min(30, H_RESUME + 8 * hStalls); }
+function hStartNeed(){ return Math.min(20, H_START + 6 * hStalls); }
+var NL = String.fromCharCode(10);
+
+function setVmode(m){
+  vmode = m;
+  mjCanvas.style.display = 'none';
+  hCanvas.style.display = 'none';
+  screen = m === 'h264' ? hCanvas : mjCanvas;
+}
+function hDv(){ return new DataView(hMem.buffer); }
+var hWasi = {
+  environ_get: function(){ return 0; },
+  environ_sizes_get: function(a, b){ hDv().setUint32(a, 0, true); hDv().setUint32(b, 0, true); return 0; },
+  clock_time_get: function(id, prec, o){ hDv().setBigUint64(o, BigInt(Math.round(performance.now() * 1e6)), true); return 0; },
+  fd_close: function(){ return 0; }, fd_fdstat_get: function(){ return 52; }, fd_fdstat_set_flags: function(){ return 52; },
+  fd_prestat_get: function(){ return 8; }, fd_prestat_dir_name: function(){ return 52; },
+  fd_read: function(){ return 52; }, fd_seek: function(){ return 52; }, path_open: function(){ return 52; },
+  fd_write: function(fd, iovs, n, nw){ var t = 0; for (var i = 0; i < n; i++) t += hDv().getUint32(iovs + i * 8 + 4, true); hDv().setUint32(nw, t, true); return 0; },
+  proc_exit: function(c){ throw new Error('exit ' + c); }
+};
+function hLoad(){
+  if (hReady) return hReady;
+  var ok = false;
+  try {
+    ok = typeof WebAssembly === 'object' && WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]));
+  } catch (e) { ok = false; }
+  if (!ok) { hReady = Promise.reject(new Error('WebAssembly SIMD assente')); hReady.catch(function(){}); return hReady; }
+  hReady = fetch('/h264.wasm').then(function(r){
+    if (!r.ok) throw new Error('decoder HTTP ' + r.status);
+    return r.arrayBuffer();
+  }).then(function(buf){
+    return WebAssembly.instantiate(buf, {
+      env: { on_frame: function(){ hOnFrame.apply(null, arguments); } },
+      wasi_snapshot_preview1: hWasi
+    });
+  }).then(function(res){
+    hWasm = res.instance.exports; hMem = hWasm.memory; hWasm._initialize();
+    if (hWasm.dec_init() !== 0) throw new Error('dec_init');
+    return true;
+  });
+  hReady.catch(function(e){ ui('decoder H.264 non disponibile: ' + e.message); });
+  return hReady;
+}
+
+// --- disegno: WebGL (YUV -> RGB sulla GPU) o, senza WebGL, conversione in WASM ---
+var hGL = null, hGLtried = false, hTex = [], hScale = null, h2d = null;
+function hInitGL(){
+  hGLtried = true;
+  try { hGL = hCanvas.getContext('webgl', {antialias: false, depth: false, preserveDrawingBuffer: true}); } catch (e) { hGL = null; }
+  if (!hGL) return;
+  var gl = hGL;
+  var vs = 'attribute vec2 p;varying vec2 t;void main(){t=vec2((p.x+1.0)*0.5,(1.0-p.y)*0.5);gl_Position=vec4(p,0.0,1.0);}';
+  var fs = 'precision mediump float;varying vec2 t;uniform sampler2D Y,U,V;uniform vec2 sy,sc;void main(){' +
+    'float y=1.1644*(texture2D(Y,vec2(t.x*sy.x,t.y)).r-0.0627);float u=texture2D(U,vec2(t.x*sc.x,t.y)).r-0.5;float v=texture2D(V,vec2(t.x*sc.x,t.y)).r-0.5;' +
+    'gl_FragColor=vec4(y+1.7927*v,y-0.2132*u-0.5329*v,y+2.1124*u,1.0);}';
+  function sh(type, src){ var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+  var pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { hGL = null; return; }
+  gl.useProgram(pr);
+  var b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  ['Y','U','V'].forEach(function(n, i){
+    var tx = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.uniform1i(gl.getUniformLocation(pr, n), i); hTex.push(tx);
+  });
+  hScale = [gl.getUniformLocation(pr, 'sy'), gl.getUniformLocation(pr, 'sc')];
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+}
+function hDrawPlanes(f){
+  var gl = hGL, w = f.w, h = f.h, ch = (h + 1) >> 1;
+  if (hCanvas.width !== w || hCanvas.height !== h) { hCanvas.width = w; hCanvas.height = h; gl.viewport(0, 0, w, h); }
+  var planes = [[f.y, f.ly, h], [f.u, f.lu, ch], [f.v, f.lv, ch]];
+  for (var i = 0; i < 3; i++) {
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, planes[i][1], planes[i][2], 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, planes[i][0]);
+  }
+  gl.uniform2f(hScale[0], w / f.ly, 1); gl.uniform2f(hScale[1], ((w + 1) >> 1) / f.lu, 1);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function hDraw(y, u, v, ly, lu, lv, w, h){
+  if (!hGLtried) hInitGL();
+  if (hGL) {
+    var gl = hGL;
+    if (hCanvas.width !== w || hCanvas.height !== h) { hCanvas.width = w; hCanvas.height = h; gl.viewport(0, 0, w, h); }
+    var ch = (h + 1) >> 1, buf = hMem.buffer;
+    var planes = [[y, ly, h], [u, lu, ch], [v, lv, ch]];
+    for (var i = 0; i < 3; i++) {
+      gl.activeTexture(gl.TEXTURE0 + i);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, planes[i][1], planes[i][2], 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
+        new Uint8Array(buf, planes[i][0], planes[i][1] * planes[i][2]));
+    }
+    gl.uniform2f(hScale[0], w / ly, 1); gl.uniform2f(hScale[1], ((w + 1) >> 1) / lu, 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return;
+  }
+  if (!h2d) h2d = hCanvas.getContext('2d');
+  if (hCanvas.width !== w || hCanvas.height !== h) { hCanvas.width = w; hCanvas.height = h; }
+  var p = hWasm.to_rgba(y, u, v, ly, lu, lv, w, h);
+  h2d.putImageData(new ImageData(new Uint8ClampedArray(hMem.buffer, p, w * h * 4), w, h), 0, 0);
+}
+
+// --- sessione ---
+function hNew(X){
+  hWasm.dec_init();
+  hs = {
+    gen: gen, X: X, pk: [], lastPts: -1, outPts: -1e9, shownPts: -1e9, dur: 1 / 30,
+    target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
+    late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
+    fpsAt: 0, fpsDrawn: 0, fpsLate: 0, fps: 0, lateNow: 0, q: [], clk: null,
+    startedAt: 0, audioRetry: 0, drewAt: 0, lagSince: 0, resyncAt: 0
+  };
+  hOnFrame = function(y, u, v, ly, lu, lv, w, h, pts){
+    if (!hs) return;
+    var prev = hs.outPts;
+    hs.outPts = pts;
+    if (pts > prev && pts - prev > 0.004 && pts - prev < 0.2) hs.dur = pts - prev;
+    if (pts < hs.X - hs.dur / 2) return;            // prima del punto di partenza
+    if (pts <= hs.shownPts + 0.001) return;          // gia' mostrato (ffmpeg ripartito)
+    if (hs.started && hGL) {
+      // tutti i frame finiscono in coda; hDue sceglie quello giusto per l'orologio
+      // e salta i vecchi. La coda e' limitata (memoria) tenendo i piu' recenti.
+      var ch = (h + 1) >> 1, buf = hMem.buffer;
+      hs.q.push({pts: pts, w: w, h: h, ly: ly, lu: lu, lv: lv,
+        y: new Uint8Array(buf, y, ly * h).slice(), u: new Uint8Array(buf, u, lu * ch).slice(),
+        v: new Uint8Array(buf, v, lv * ch).slice()});
+      while (hs.q.length > 12) { hs.q.shift(); hs.late++; }
+      return;
+    }
+    hDraw(y, u, v, ly, lu, lv, w, h);
+    hShown(pts);
+  };
+}
+function hShown(pts){
+  hs.shownPts = pts;
+  hs.drawn++;
+  drawnT = Math.max(0, pts - hs.X);
+  pos = pts;
+}
+// disegna il frame piu' recente gia' dovuto. Chiamata sia dal refresh dello
+// schermo (requestAnimationFrame, fluido) sia dal timer hTick: se il browser
+// ferma requestAnimationFrame (scheda in secondo piano, schermo che rallenta)
+// il video andrebbe comunque avanti, mentre l'orologio audio continua a correre.
+function hDue(){
+  if (!hs || !hs.started || !hs.q.length || userPaused || stalled) return;
+  var T = hClock(), f = null;
+  while (hs.q.length && hs.q[0].pts <= T + 0.008) {
+    if (f) hs.late++;
+    f = hs.q.shift();
+  }
+  // nessun frame dovuto: se tutta la coda e' nel futuro si aspetta; se invece
+  // siamo rimasti indietro (tutti prima di T) si mostra comunque il piu' recente
+  if (!f) return;
+  hDrawPlanes(f);
+  hShown(f.pts);
+  hs.drewAt = performance.now();
+}
+// video rimasto troppo indietro rispetto all'audio e non recupera (dispositivo
+// che non regge la decodifica): si risincronizza saltando alla posizione audio
+// con un nuovo keyframe dal server. Con un minimo di distanza tra due salti.
+function hMaybeResync(T){
+  if (!hs.started || hs.shownPts < 0) return false;
+  var lag = T - hs.shownPts;
+  if (lag < 2.5) { hs.lagSince = 0; return false; }
+  var now = performance.now();
+  if (!hs.lagSince) { hs.lagSince = now; return false; }
+  if (now - hs.lagSince < 1500) return false;
+  if (now - (hs.resyncAt || 0) < 6000) return false;
+  hs.resyncAt = now; hs.lagSince = 0;
+  ui('video indietro ' + lag.toFixed(1) + ' s, risincronizzo');
+  beginAt(Math.floor(T));
+  return true;
+}
+function hPresent(me){
+  if (!hs || hs !== me) return;
+  requestAnimationFrame(function(){ hPresent(me); });
+  hDue();
+}
+function hStop(){
+  if (!hs) return;
+  if (hs.abort) hs.abort.abort();
+  hs = null;
+  hOnFrame = function(){};
+}
+function hStream(){
+  var my = gen, me = hs, ctrl = new AbortController();
+  me.abort = ctrl;
+  fetch('/stream.h264?t=' + Date.now(), {signal: ctrl.signal}).then(ck).then(function(res){
+    if (!res.ok) { me.failed = res.status; return; }
+    var reader = res.body.getReader();
+    var pend = new Uint8Array(0);
+    function read(){
+      if (my !== gen || hs !== me) return;
+      if (me.lastPts - Math.max(me.X, me.shownPts) > H_AHEAD) {
+        return new Promise(function(ok){ setTimeout(ok, 500); }).then(read);
+      }
+      return reader.read().then(function(r){
+        if (my !== gen || hs !== me) return;
+        if (r.done) { me.ended = true; return; }
+        pend = pend.length ? concatU8(pend, r.value) : r.value;
+        var off = 0;
+        while (pend.length - off >= 12) {
+          var dv = new DataView(pend.buffer, pend.byteOffset + off, 12);
+          var n = dv.getUint32(0, true), pts = dv.getFloat64(4, true);
+          if (pend.length - off - 12 < n) break;
+          me.pk.push({pts: pts, data: pend.subarray(off + 12, off + 12 + n)});
+          if (pts > me.lastPts) me.lastPts = pts;
+          off += 12 + n;
+        }
+        pend = off < pend.length ? pend.slice(off) : new Uint8Array(0);
+        return read();
+      });
+    }
+    return read();
+  }).catch(function(){});
+}
+// decodifica pacchetti finche' esce un frame; false se non c'e' altro da decodificare
+function hDecodeNext(){
+  while (hs.pk.length) {
+    var p = hs.pk.shift();
+    var ptr = hWasm.in_buf(p.data.length);
+    new Uint8Array(hMem.buffer, ptr, p.data.length).set(p.data);
+    if (hWasm.decode(p.data.length, p.pts) > 0) return true;
+  }
+  if (hs.ended && !hs.flushed) { hs.flushed = true; return hWasm.flush() > 0; }
+  return false;
+}
+// momento del video che deve essere sullo schermo adesso
+function hRawClock(){
+  // l'orologio dell'audio vale solo se l'audio e' davvero in programma: senza
+  // dati audio (stream che non arriva) il video va per conto suo
+  if (actx && audioOn && audioArm && actx.state !== 'closed' && aDiag.sched > 0) return hs.X + (actx.currentTime - syncOrigin);
+  return hs.X + (performance.now() - playOrigin) / 1000;
+}
+// L'orologio dell'audio avanza a scatti (blocchi di 10-40 ms in alcuni browser):
+// usato direttamente, i frame uscivano a intervalli irregolari e il video
+// sembrava meno fluido dei suoi fps. Qui si segue performance.now() e lo si
+// corregge piano verso l'audio; se l'audio si ferma (pausa, stallo) ci si ferma.
+function hClock(){
+  if (!hs.started) { hs.clk = null; return hs.X + drawnT; }
+  // fermi (pausa o caricamento): l'orologio resta dove si e' fermato. Prima si
+  // usava l'ultimo frame mostrato, che poteva essere indietro rispetto
+  // all'audio: alla ripartenza il buffer sembrava subito finito e il player
+  // alternava fermo/riparti decine di volte al secondo
+  if (userPaused || stalled) { hs.clk = null; return hs.holdT != null ? hs.holdT : hs.X + drawnT; }
+  var raw = hRawClock(), now = performance.now();
+  var c = hs.clk;
+  if (!c || (actx && audioOn && audioArm && aDiag.sched > 0 && actx.state !== 'running')) {
+    hs.clk = c = {raw: raw, rawAt: now, t: raw, at: now};
+    return raw;
+  }
+  if (raw !== c.raw) { c.raw = raw; c.rawAt = now; }
+  else if (now - c.rawAt > 150) { c.at = now; return c.t; }   // audio fermo: niente corsa in avanti
+  var t = c.t + (now - c.at) / 1000;
+  var err = raw - t;
+  if (Math.abs(err) > 0.12) t = raw; else t += err * 0.08;
+  c.t = t; c.at = now;
+  return t;
+}
+function hAhead(){ return hs.lastPts - Math.max(hs.X, hs.shownPts); }
+
+// preparazione: decodifica dal keyframe fino al primo frame da mostrare
+function hPreroll(budgetMs){
+  var until = performance.now() + budgetMs;
+  while (hs.shownPts < hs.X - hs.dur && performance.now() < until) {
+    if (!hDecodeNext()) break;
+  }
+  return hs.shownPts >= hs.X - hs.dur;
+}
+function showVideoH(){
+  if (actx && audioOn && actx.state === 'suspended') actx.resume();
+  screen.style.display = 'block';
+  freezeC.style.display = 'none';
+  overlay.style.display = 'none';
+  stalled = false;
+  hs.started = true;
+  hs.startedAt = performance.now();
+  drawnT = Math.max(0, hs.shownPts - hs.X);
+  pos = hs.X + drawnT;
+  startClock();
+  draw();
+  if (playTimer) clearInterval(playTimer);
+  playTimer = setInterval(hTick, 10);
+  var me = hs;
+  requestAnimationFrame(function(){ hPresent(me); });
+  // l'MP3 parte esattamente da X: orologio audio = X adesso. Il primo frame
+  // (pts >= X - mezzo frame) e' gia' sullo schermo, gli altri seguono l'audio.
+  syncOrigin = actx ? actx.currentTime : 0;
+  audioArm = true;
+  audioCursor = 0;
+  playOrigin = performance.now();
+  flushHeldAudio();
+}
+function hFinish(){
+  clearInterval(playTimer);
+  playTimer = null;
+  stopClock();
+  if (actx && actx.state === 'running') actx.suspend();
+  draw();
+  showNext(true);
+}
+// fotogrammi mostrati nell'ultimo secondo e fps del video originale
+// l'audio non arriva (0 byte dopo qualche secondo di video): si ricollega lo
+// stream mp3 senza toccare l'orologio; i blocchi gia' passati vengono saltati
+function hAudioWatch(){
+  if (!audioOn || !actx || aDiag.kb > 0 || !hs.startedAt) return;
+  if (performance.now() - hs.startedAt < 4000 * (hs.audioRetry + 1)) return;
+  if (hs.audioRetry >= 3) return;
+  hs.audioRetry++;
+  ui('audio: nessun dato dopo ' + Math.round((performance.now() - hs.startedAt) / 1000) + 's, ricollego (' + hs.audioRetry + ')');
+  var keepOrigin = syncOrigin;
+  audioUrl = '/stream.mp3?t=' + Date.now() + '&r=' + hs.audioRetry;
+  playAudioStream(audioUrl);
+  syncOrigin = keepOrigin;
+  audioArm = true;
+  audioCursor = 0;
+}
+function hFps(){
+  var now = performance.now();
+  if (!hs.fpsAt) { hs.fpsAt = now; hs.fpsDrawn = hs.drawn; hs.fpsLate = hs.late; return; }
+  var dt = (now - hs.fpsAt) / 1000;
+  if (dt < 1) return;
+  hs.fps = (hs.drawn - hs.fpsDrawn) / dt;
+  hs.lateNow = hs.late - hs.fpsLate;
+  hs.fpsAt = now; hs.fpsDrawn = hs.drawn; hs.fpsLate = hs.late;
+}
+// video fermo pur essendo in riproduzione (orologio audio bloccato): prima si
+// prova a riaccendere l'audio, poi si chiede un tocco, che riparte da qui
+function hWatch(T){
+  if (T > hs.lastT + 0.01) { hs.lastT = T; hs.frozenAt = 0; return; }
+  var now = performance.now();
+  if (!hs.frozenAt) { hs.frozenAt = now; return; }
+  var f = now - hs.frozenAt;
+  if (f > 1500 && !hs.resumeTried && actx && actx.state !== 'running') {
+    hs.resumeTried = true;
+    actx.resume();
+  }
+  if (f > 3500 && !hs.askedTap && !hs.tapShown && actx && actx.state !== 'running') {
+    hs.askedTap = true;
+    hs.tapShown = true;
+    ui('video fermo (audio ' + (actx ? actx.state : 'assente') + '): tocca per ripartire');
+    overlay.style.display = 'flex';
+    msg.style.display = 'block';
+    msg.textContent = 'Tocca lo schermo per avviare';
+    go.style.display = 'block';
+  }
+}
+// un tocco sullo schermo mentre si aspetta: si riaccende l'audio e si riparte
+// da dove si era (audio e video erano fermi insieme, restano allineati)
+function hTapResume(){
+  if (!hs || !hs.askedTap) return false;
+  hs.askedTap = false; hs.frozenAt = 0; hs.resumeTried = false;
+  overlay.style.display = 'none';
+  go.style.display = 'none';
+  if (actx && actx.state !== 'running') actx.resume();
+  return true;
+}
+function hTick(){
+  if (!hs || hs.gen !== gen) return;
+  if (userPaused) {
+    hs.frozenAt = 0; hs.fpsAt = 0;
+    if (actx && actx.state === 'running') actx.suspend();
+    var hud0 = document.getElementById('hud');
+    if (hud0) hud0.textContent = 'pausa, video pronto ' + hAhead().toFixed(0) + ' s';
+    return;
+  }
+  pollRate();
+  var ahead = hs.lastPts - hClock();
+  if (!stalled && !hs.ended && ahead < H_STALL) {
+    hs.frozenAt = 0; hs.fpsAt = 0;
+    hs.holdT = hClock();
+    hStalls++;
+    ui('caricamento: fermo ' + hStalls + ', riparto con ' + hResumeNeed() + ' s pronti');
+    stallPlay('carico il video, ' + Math.max(0, ahead).toFixed(1) + ' / ' + hResumeNeed() + ' s');
+    return;
+  }
+  if (stalled) {
+    if (!hs.ended && ahead < hResumeNeed()) {
+      hs.frozenAt = 0; hs.fpsAt = 0;
+      showStatus('linea lenta: carico il video, ' + Math.max(0, ahead).toFixed(1) + ' / ' + hResumeNeed() + ' s');
+      return;
+    }
+    resumePlay();
+    playOrigin = performance.now() - ((hs.holdT != null ? hs.holdT : hs.X + drawnT) - hs.X) * 1000;
+    hs.holdT = null;
+    hs.clk = null;
+    // audio e video erano fermi insieme: l'audio programmato e' ancora allineato
+    if (actx && audioOn && actx.state === 'suspended') actx.resume();
+  }
+  if (audioHold.length && audioArm) flushHeldAudio();
+  var T = hClock();
+  hs.target = T;
+  hFps();
+  hAudioWatch();
+  // decodifica in anticipo fino a poco oltre l'orologio, entro un budget di
+  // tempo; la coda la svuota hDue mostrando il frame giusto. Se siamo indietro
+  // (outPts < T) decodifica a tutta per rincorrere; non si blocca mai sulla coda.
+  var until = performance.now() + 25;
+  if (hGL) {
+    while (hs.q.length < 8 && hs.outPts <= T + hs.dur * 3 && performance.now() < until) {
+      if (!hDecodeNext()) break;
+    }
+  } else {
+    while (hs.outPts + hs.dur <= T + hs.dur * 0.5 && performance.now() < until) {
+      if (!hDecodeNext()) break;
+    }
+  }
+  // se requestAnimationFrame non disegna da oltre 50 ms (scheda in secondo
+  // piano, schermo lento), ci pensa il timer: il video non resta mai fermo
+  // mentre l'audio corre
+  if (performance.now() - (hs.drewAt || 0) > 50) hDue();
+  if (hs.ended && hs.flushed && !hs.pk.length && !hs.q.length && T > hs.outPts + hs.dur) { hFinish(); return; }
+  if (hMaybeResync(T)) return;   // la risincronizzazione ricrea la sessione
+  hWatch(T);
+}
+
+// avvio di uno stream H.264 a partire da pos (chiamata da beginAt)
+function beginH264(my, t0){
+  hNew(pos);
+  setVmode('h264');
+  audioUrl = '/stream.mp3?t=' + Date.now();
+  playAudioStream(audioUrl);
+  hStream();
+  var blocked = false;
+  fillWait = setInterval(function(){
+    if (my !== gen || blocked) { if (blocked) clearInterval(fillWait); return; }
+    pollRate();
+    fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
+      if (my !== gen || blocked) return;
+      if (err && (err.indexOf('H264') === 0 || err.indexOf('403 dopo') === 0)) {
+        blocked = true;
+        hFallback(err);
+        return;
+      }
+      if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0)) {
+        blocked = true;
+        clearInterval(fillWait);
+        stopVideo();
+        stopAudio();
+        overlay.style.display = 'flex';
+        msg.style.display = 'block';
+        go.style.display = 'none';
+        msg.textContent = err;
+        ui(err);
+      }
+    });
+    if (blocked || !hs) return;
+    if (hs.failed) { blocked = true; hFallback('stream H.264 rifiutato (' + hs.failed + ')'); return; }
+    var first = hPreroll(120);
+    var ahead = hAhead();
+    var audioReady = !audioOn || audioHold.length > 0;
+    var elapsed = Date.now() - t0;
+    if (!hs.pk.length && hs.lastPts < 0 && elapsed > 25000) {
+      showStatus('nessun dato video. controllo cookie nel log');
+      return;
+    }
+    showStatus('caricamento ' + Math.max(0, ahead).toFixed(1) + ' / ' + hStartNeed() + ' s' + (first && ahead >= hStartNeed() && !audioReady ? ', audio' : ''));
+    if (first && (ahead >= hStartNeed() || hs.ended) && (audioReady || elapsed > 8000)) {
+      clearInterval(fillWait);
+      showVideoH();
+    }
+  }, 200);
+}
+function hFallback(why){
+  clearInterval(fillWait);
+  var x = hs ? hs.X : pos;
+  ui('H.264 non disponibile (' + why + '), uso MJPEG');
+  setVmode('mjpeg');
+  beginAt(x);
+}
+setVmode(vmode);
+if (VMODE_CFG) hLoad();
+
+var fillWait = null;
+function beginAt(sec){
+  pos = Math.floor(sec || 0);
+  startAt = pos;
+  history.replaceState(null, '', '/?watch=' + VID + '&t=' + pos);
+  if (fillWait) clearInterval(fillWait);
+  var my = ++gen;
+  stopVideo();
+  stopAudio();
+  stopClock();
+  showStatus('apro lo stream a ' + pos + 's');
+  var t0 = Date.now();
+  if (vmode === 'h264') {
+    hLoad().then(function(){
+      if (my !== gen) return;
+      return fetch('/ctrl?pos=' + pos + '&mode=h264').then(ck).then(function(){
+        if (my === gen) beginH264(my, t0);
+      });
+    }).catch(function(e){
+      if (my !== gen || kickedShown) return;
+      ui('uso MJPEG: ' + (e && e.message ? e.message : e));
+      setVmode('mjpeg');
+      beginAt(pos);
+    });
+    return;
+  }
+  setVmode('mjpeg');
+  fetch('/ctrl?pos=' + pos + '&mode=mjpeg').then(ck).then(function(){
+    if (my !== gen) return;
+    audioUrl = '/stream.mp3?t=' + Date.now();
+    playAudioStream(audioUrl);
+    startVideoBuf();
+    var blocked = false;
+    fillWait = setInterval(function(){
+      if (my !== gen || blocked) { if (blocked) clearInterval(fillWait); return; }
+      pollRate();
+      fetch('/status').then(ck).then(function(r){ return r.text(); }).then(function(err){
+        if (my !== gen) return;
+        if (err && (err.indexOf('Verifica') === 0 || err.indexOf('yt-dlp') === 0 || err.indexOf('Nessuno stream') === 0 || err.indexOf('403 dopo') === 0)) {
+          blocked = true;
+          clearInterval(fillWait);
+          stopVideo();
+          stopAudio();
+          overlay.style.display = 'flex';
+          msg.style.display = 'block';
+          go.style.display = 'none';
+          msg.textContent = err;
+          ui(err);
+        }
+      });
+      if (blocked) return;
+      if (!rateMb && Date.now() - t0 < 8000) {
+        showStatus('misuro la linea');
+        return;
+      }
+      if (!frames.length && Date.now() - t0 > 12000) {
+        showStatus('nessun frame. controllo cookie nel log');
+        return;
+      }
+      var slow = rateMb > 0 && rateMb < 1;
+      var need = slow ? FPS * 12 : FPS * 5;
+      var audioReady = !audioOn || audioHold.length > 0;
+      var elapsed_ms = Date.now() - t0;
+      showStatus(slow ? 'linea lenta: carico ' + need + ' frame' : 'caricamento' + (frames.length >= need && !audioReady ? ' audio' : ''));
+      if (frames.length >= need && (audioReady || elapsed_ms > 6000)) {
+        clearInterval(fillWait);
+        showVideo();
+      }
+    }, 300);
+  });
+}
+go.onclick = function(){
+  if (hTapResume()) { ensureCtx(); return; }
+  ensureCtx().then(function(){ beginAt(pos); });
+};
+mjCanvas.onclick = stageClick;
+hCanvas.onclick = stageClick;
+overlay.onclick = function(ev){
+  if (ev.target === go) return;
+  if (hTapResume()) { ensureCtx(); return; }
+  stageClick(ev);
+};
+var cfgNow = __CFG__;
+var SETTINGS = __OPTS__;
+function stageClick(ev){
+  if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #fitbtn, #fsbtn, #nexts, #prog, #pp')) return;
+  if (go.style.display !== 'none') return;
+  if (userPaused) { showControls(); return; }
+  if (chromeOn) hideControls(); else showControls();
+}
+function saveCfgCookie(){
+  var o = {};
+  SETTINGS.forEach(function(f){ o[f.key] = cfgNow[f.key]; });
+  document.cookie = 'yt_cfg=' + encodeURIComponent(JSON.stringify(o)) + '; max-age=31536000; path=/; samesite=lax';
+}
+function drawCfg(){
+  var box = document.getElementById('panel');
+  box.innerHTML = '<p id="panel-title">Impostazioni</p>';
+  SETTINGS.forEach(function(f){
+    if (vmode === 'h264' && (f.key === 'FPS' || f.key === 'Q')) return;
+    var row = document.createElement('div');
+    row.className = 'row2';
+    row.innerHTML = '<p><b>' + f.label + '</b><small>' + f.help + '</small></p><div class="opts"></div>';
+    var opts = row.querySelector('.opts');
+    f.options.forEach(function(o){
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = o[1];
+      if (cfgNow[f.key] === o[0]) b.className = 'on';
+      b.onclick = function(ev){ ev.stopPropagation(); cfgNow[f.key] = o[0]; drawCfg(); };
+      opts.appendChild(b);
+    });
+    box.appendChild(row);
+  });
+  var save = document.createElement('button');
+  save.id = 'savecfg';
+  save.type = 'button';
+  save.textContent = 'Salva e applica';
+  save.onclick = function(ev){
+    ev.stopPropagation();
+    saveCfgCookie();
+    box.innerHTML = '<p>salvo, riparto con le nuove impostazioni...</p>';
+    location.reload();
+  };
+  box.appendChild(save);
+  var reset = document.createElement('button');
+  reset.id = 'resetcfg';
+  reset.type = 'button';
+  reset.textContent = 'Ripristina i default';
+  reset.onclick = function(ev){
+    ev.stopPropagation();
+    document.cookie = 'yt_cfg=; max-age=0; path=/';
+    location.reload();
+  };
+  box.appendChild(reset);
+}
+document.getElementById('menu').addEventListener('click', function(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var side = document.getElementById('side');
+  var open = side.className.indexOf('on') === -1;
+  side.className = open ? 'on' : '';
+  if (open) drawCfg();
+}, true);
+function seekAt(ev){
+  if (!DURATION || IS_LIVE) return;
+  var x = ev.clientX;
+  if (ev.changedTouches && ev.changedTouches[0]) x = ev.changedTouches[0].clientX;
+  var r = document.getElementById('prog').getBoundingClientRect();
+  var sec = Math.floor(Math.max(0, Math.min(DURATION, ((x - r.left) / r.width) * DURATION)));
+  pos = sec;
+  draw();
+  ensureCtx().then(function(){ beginAt(sec); });
+}
+document.getElementById('prog').onclick = seekAt;
+document.getElementById('prog').ontouchend = function(ev){ ev.preventDefault(); seekAt(ev); };
+draw();
+preload();
+window.addEventListener('pagehide', function(){
+  fetch('/bye', {keepalive: true}).catch(function(){});
+});
+function loadNext(){
+  fetch('/next').then(function(r){ return r.json(); }).then(function(list){
+    var box = document.getElementById('nexts');
+    box.innerHTML = '';
+    (list || []).forEach(function(n){
+      var a = document.createElement('a');
+      a.href = '/watch?v=' + n.id;
+      a.style.cssText = 'width:128px;background:#222;display:block;flex:0 0 auto';
+      a.innerHTML = '<img src="https://i.ytimg.com/vi/' + n.id + '/hqdefault.jpg" style="width:100%;display:block"><span style="display:block;font-size:12px;padding:4px">' + (n.title || '').replace(/</g,'') + '</span>';
+      box.appendChild(a);
+    });
+  }).catch(function(){});
+}
+loadNext();
+</script>
