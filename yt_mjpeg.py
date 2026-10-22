@@ -26,7 +26,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.15"
+VERSION = "14.16"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -1889,12 +1889,16 @@ HTML = """<!doctype html>
   #fill{display:block;height:100%;width:0;background:#fff}
   #time{position:fixed;right:12px;bottom:40px;font-size:14px;z-index:4}
   #log{display:none}
-  #menu,#homebtn{
-    position:fixed;top:12px;z-index:30;width:48px;height:48px;border:0;border-radius:8px;
-    background:rgba(0,0,0,.55);color:#fff;font-size:26px;
+  #menu,#homebtn,#fitbtn,#fsbtn{
+    height:52px;border:1px solid rgba(255,255,255,.35);border-radius:10px;box-sizing:border-box;
+    background:rgba(0,0,0,.6);color:#fff;font-size:26px;font-family:sans-serif;
   }
-  #menu{left:12px}
-  #homebtn{right:12px;display:none;text-decoration:none;text-align:center;line-height:48px}
+  #menu{position:fixed;top:12px;left:12px;z-index:30;width:52px}
+  #topr{position:fixed;top:12px;right:12px;z-index:30;display:flex;gap:10px}
+  #homebtn{display:none;text-decoration:none;align-items:center;gap:8px;padding:0 18px;font-size:22px;font-weight:bold}
+  #homebtn b{font-size:32px;line-height:1}
+  #fitbtn,#fsbtn{display:none;padding:0 16px;font-size:20px}
+  #screen,#hscreen,#freeze,#v{object-fit:var(--fit,contain)}
   #side{
     position:fixed;top:0;left:0;bottom:0;width:440px;max-width:94vw;background:#141414;z-index:20;
     transform:translateX(-110%);transition:transform .2s;display:flex;flex-direction:column;
@@ -1923,10 +1927,11 @@ HTML = """<!doctype html>
   #savecfg{width:100%;height:48px;margin-top:16px;border:0;border-radius:8px;background:#fff;color:#000;font-size:18px}
   #freeze{position:fixed;inset:0;width:100%;height:100%;display:none;z-index:2;background:#000}
   #pp{
-    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:11;display:none;
-    width:150px;height:150px;border-radius:50%;border:3px solid rgba(255,255,255,.85);
-    background:rgba(0,0,0,.55);color:#fff;font-size:64px;line-height:1;padding:0;
+    position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:13;display:none;
+    width:130px;height:130px;border-radius:50%;border:3px solid rgba(255,255,255,.85);
+    background:rgba(0,0,0,.55);color:#fff;font-size:56px;line-height:1;padding:0;
   }
+  #nexts a span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 </style>
 <img id="v" alt="">
 <canvas id="screen"></canvas>
@@ -1942,12 +1947,16 @@ HTML = """<!doctype html>
 <div id="prog"><div id="track"><i id="fill"></i></div></div>
 <div id="time"></div>
 <button id="menu" type="button">&#9881;</button>
-<a id="homebtn" href="/home">&#8962;</a>
+<div id="topr">
+<button id="fsbtn" type="button">Schermo intero</button>
+<button id="fitbtn" type="button">Adatta</button>
+<a id="homebtn" href="/home"><b>&#8962;</b>Home</a>
+</div>
 <div id="side">
   <div id="panel"></div>
 </div>
 <div id="log"></div>
-<div id="nexts" style="display:none;position:fixed;left:8px;right:8px;bottom:58px;z-index:12;gap:8px;overflow:auto;background:rgba(0,0,0,.55);padding:8px"></div>
+<div id="nexts" style="display:none;position:fixed;left:8px;right:8px;bottom:54px;z-index:12;gap:8px;overflow:auto;background:rgba(0,0,0,.55);padding:6px"></div>
 <script>
 var DURATION = __DUR__;
 var FPS = __FPS__;
@@ -2644,7 +2653,9 @@ function ctlGlyph(){ ppBtn.innerHTML = userPaused ? '&#9654;' : '&#10074;&#10074
 function showControls(autoHideMs){
   chromeOn = true;
   showNext(true);
-  document.getElementById('homebtn').style.display = 'block';
+  document.getElementById('homebtn').style.display = 'flex';
+  document.getElementById('fitbtn').style.display = 'block';
+  if (fsOk) document.getElementById('fsbtn').style.display = 'block';
   ctlGlyph();
   ppBtn.style.display = 'block';
   if (ctlTimer) { clearTimeout(ctlTimer); ctlTimer = null; }
@@ -2656,8 +2667,42 @@ function hideControls(){
   chromeOn = false;
   showNext(false);
   document.getElementById('homebtn').style.display = 'none';
+  document.getElementById('fitbtn').style.display = 'none';
+  document.getElementById('fsbtn').style.display = 'none';
   ppBtn.style.display = 'none';
 }
+// come riempire lo schermo: adatta (bande nere), riempi (taglia i lati), stira
+var FITS = [['contain', 'Adatta'], ['cover', 'Riempi'], ['fill', 'Stira']];
+var fitIdx = 0;
+try { fitIdx = Math.max(0, FITS.map(function(f){ return f[0]; }).indexOf(localStorage.getItem('dt_fit'))); } catch (e) {}
+function applyFit(){
+  document.documentElement.style.setProperty('--fit', FITS[fitIdx][0]);
+  document.getElementById('fitbtn').textContent = FITS[fitIdx][1];
+}
+applyFit();
+document.getElementById('fitbtn').onclick = function(ev){
+  ev.stopPropagation();
+  fitIdx = (fitIdx + 1) % FITS.length;
+  applyFit();
+  try { localStorage.setItem('dt_fit', FITS[fitIdx][0]); } catch (e) {}
+  showControls();
+};
+// schermo intero del browser, dove e' disponibile
+var docEl = document.documentElement;
+var fsOk = !!(docEl.requestFullscreen || docEl.webkitRequestFullscreen);
+function fsActive(){ return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+function fsLabel(){ document.getElementById('fsbtn').textContent = fsActive() ? 'Esci schermo intero' : 'Schermo intero'; }
+document.getElementById('fsbtn').onclick = function(ev){
+  ev.stopPropagation();
+  try {
+    if (fsActive()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else (docEl.requestFullscreen || docEl.webkitRequestFullscreen).call(docEl);
+  } catch (e) {}
+  setTimeout(fsLabel, 300);
+  showControls();
+};
+document.addEventListener('fullscreenchange', fsLabel);
+document.addEventListener('webkitfullscreenchange', fsLabel);
 ppBtn.onclick = function(ev){
   ev.stopPropagation();
   togglePlay();
@@ -3285,7 +3330,7 @@ overlay.onclick = function(ev){
 var cfgNow = __CFG__;
 var SETTINGS = __OPTS__;
 function stageClick(ev){
-  if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #nexts, #prog, #pp')) return;
+  if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #fitbtn, #fsbtn, #nexts, #prog, #pp')) return;
   if (go.style.display !== 'none') return;
   if (userPaused) { showControls(); return; }
   if (chromeOn) hideControls(); else showControls();
@@ -3368,7 +3413,7 @@ function loadNext(){
     (list || []).forEach(function(n){
       var a = document.createElement('a');
       a.href = '/watch?v=' + n.id;
-      a.style.cssText = 'width:160px;background:#222;display:block;flex:0 0 auto';
+      a.style.cssText = 'width:128px;background:#222;display:block;flex:0 0 auto';
       a.innerHTML = '<img src="https://i.ytimg.com/vi/' + n.id + '/hqdefault.jpg" style="width:100%;display:block"><span style="display:block;font-size:12px;padding:4px">' + (n.title || '').replace(/</g,'') + '</span>';
       box.appendChild(a);
     });
@@ -4441,7 +4486,7 @@ class Handler(BaseHTTPRequestHandler):
 body{background:#111;color:#fff;font-family:sans-serif;margin:0}
 form{display:flex;gap:8px;padding:12px;position:sticky;top:0;background:#111}
 input{flex:1;font-size:18px;padding:8px}
-button,a.back{font-size:18px;padding:8px 14px;color:#fff}
+button,a.back{font-size:18px;padding:8px 14px;color:#fff;background:#2563eb;border:0;border-radius:8px}
 .chips{display:flex;gap:8px;flex-wrap:wrap;padding:0 12px 12px}
 .chip,.chip:visited{color:#fff;background:#333;text-decoration:none;padding:6px 10px;border-radius:12px}
 h2{grid-column:1/-1;font-size:16px;margin:8px 0 0}
