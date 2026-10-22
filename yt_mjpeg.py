@@ -26,7 +26,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "14.14"
+VERSION = "14.15"
 UPDATE_URL = "https://raw.githubusercontent.com/psummo/drive-tube/main/yt_mjpeg.py"
 
 PORT = int(os.environ.get("YT_PORT") or 8090)
@@ -858,7 +858,7 @@ def account_sections():
     ]
     out = {}
     with ThreadPoolExecutor(max_workers=5) as pool:
-        futs = {pool.submit(flat_rows, url, n, start): name for name, url, start, n in jobs}
+        futs = {pool.submit(in_session(flat_rows), url, n, start): name for name, url, start, n in jobs}
         for fut in futs:
             name = futs[fut]
             try:

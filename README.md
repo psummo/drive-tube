@@ -207,6 +207,9 @@ Available after login:
 
 ## Changelog
 
+### 14.15
+- **Personal feed fixed**: subscriptions, watch later and liked videos were fetched in worker threads that lost the session, so yt-dlp ran without the account cookies and YouTube answered "The playlist does not exist". They now use the cookies like the rest of the app.
+
 ### 14.14
 - **Fewer stalls, especially on long videos**: ffmpeg used to download each stream with a single HTTP request to the end of the file; YouTube slows down or drops such requests after a few MB, so long videos stalled for loading again and again. The stream now goes through a small local proxy (127.0.0.1 only) that fetches it from YouTube in 10 MB pieces, as yt-dlp does, and resumes from the same byte when a connection drops, without ffmpeg noticing. Seeking still works (byte ranges are passed through). An http(s) proxy set in the admin page now applies to the stream too.
 
