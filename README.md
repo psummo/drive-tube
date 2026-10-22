@@ -207,6 +207,9 @@ Available after login:
 
 ## Changelog
 
+### 14.14
+- **Fewer stalls, especially on long videos**: ffmpeg used to download each stream with a single HTTP request to the end of the file; YouTube slows down or drops such requests after a few MB, so long videos stalled for loading again and again. The stream now goes through a small local proxy (127.0.0.1 only) that fetches it from YouTube in 10 MB pieces, as yt-dlp does, and resumes from the same byte when a connection drops, without ffmpeg noticing. Seeking still works (byte ranges are passed through). An http(s) proxy set in the admin page now applies to the stream too.
+
 ### 14.13
 - **403 on the stream**: when YouTube refuses the stream (HTTP 403) the player no longer retries the same rejected URL: it fetches fresh URLs right away and, if the 403 repeats, tries other YouTube clients in turn (`tv`, `web_safari`, `mweb`, `android_vr`). The client that works is kept for the rest of that session and written to the log, so you can save it in the admin page.
 - **Network diagnosis checks the real stream**: *Trova una configurazione che funziona* used to check only that yt-dlp could read the video, which passes even when the stream itself is then refused. It now also downloads the first bytes of the stream, so a combination marked OK actually plays.
