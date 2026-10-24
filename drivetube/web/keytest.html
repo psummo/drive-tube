@@ -1,0 +1,221 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test comandi</title>
+<style>
+  html,body{margin:0;background:#111;color:#fff;font-family:sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:12px;position:sticky;top:0;background:#111;z-index:2;flex-wrap:wrap}
+  header h1{font-size:20px;margin:0;flex:1}
+  a.btn,button{font-size:18px;padding:10px 16px;border:0;border-radius:10px;background:#2563eb;color:#fff;text-decoration:none}
+  button.grey,a.grey{background:#333}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 12px 12px}
+  @media (max-width:800px){main{grid-template-columns:1fr}}
+  section{background:#1b1b1b;border-radius:12px;padding:12px}
+  section h2{font-size:17px;margin:0 0 8px}
+  small{color:#aaa}
+  #pad{height:180px;border:2px dashed #555;border-radius:12px;display:flex;align-items:center;justify-content:center;
+       font-size:22px;text-align:center;user-select:none;-webkit-user-select:none;touch-action:none}
+  #pad.down{background:#2563eb33;border-color:#2563eb}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  #log{font:13px/1.45 monospace;white-space:pre-wrap;background:#000;border-radius:12px;padding:10px;margin:0 12px 12px;
+       max-height:45vh;overflow:auto}
+  .k{color:#7dd3fc}.m{color:#fca5a5}.t{color:#bef264}.s{color:#fde68a}
+  #ms{font-size:14px;color:#ccc}
+</style></head><body>
+<header>
+  <h1>Test comandi: tocchi, tasti, rotella, Media Session</h1>
+  <button class="grey" id="clear">Pulisci</button>
+  <a class="btn grey" href="/home">Home</a>
+</header>
+<main>
+  <section>
+    <h2>Tocco e pressione prolungata</h2>
+    <div id="pad">Tocca, tieni premuto, fai doppio tocco</div>
+    <small>Misura la durata di ogni pressione e registra il menu contestuale (tocco lungo) e il doppio tocco.</small>
+  </section>
+  <section>
+    <h2>Tasti, rotella del volante, controller</h2>
+    <small>Con questa pagina aperta premi i tasti al volante: rotella su/giu', click della rotella, avanti/indietro,
+    volume. Ogni evento che arriva al browser compare qui sotto (tasto, codice, rotella, controller).
+    Se non compare nulla, quel comando la Tesla lo tiene per se'.</small>
+    <div class="row"><span id="focus" class="s"></span></div>
+  </section>
+  <section>
+    <h2>Media Session: riquadro "in riproduzione"</h2>
+    <div id="ms"></div>
+    <div class="row">
+      <button id="msWebAudio">Prova 1: solo Web Audio</button>
+      <button id="msAudio">Prova 2: con &lt;audio&gt; muto</button>
+      <button class="grey" id="msStop">Ferma</button>
+    </div>
+    <small>La prova 1 usa solo Web Audio, come drive-tube: non tocca i video. La prova 2 usa un elemento &lt;audio&gt;
+    muto, quello che la Tesla blocca in marcia: provala prima da ferma. Dopo ogni prova guarda se il riquadro
+    multimediale della Tesla mostra "drive-tube test" e premi avanti/indietro/pausa (sul riquadro e al volante):
+    se la pagina riceve il comando, compare qui sotto come "azione".</small>
+  </section>
+  <section>
+    <h2>Altro</h2>
+    <div class="row">
+      <button id="fs">Schermo intero</button>
+      <button class="grey" id="vib">Vibrazione</button>
+    </div>
+    <small>Registra anche: cambio di visibilita' della pagina (es. quando la Tesla la nasconde), focus, rotazione e
+    dimensioni dello schermo.</small>
+  </section>
+</main>
+<div id="log"></div>
+<script>
+var box = document.getElementById('log');
+var sent = [], sendTimer = null;
+function log(cls, text){
+  var t = new Date();
+  var stamp = ('0' + t.getMinutes()).slice(-2) + ':' + ('0' + t.getSeconds()).slice(-2) + '.' + ('00' + t.getMilliseconds()).slice(-3);
+  var row = document.createElement('div');
+  row.className = cls;
+  row.textContent = stamp + '  ' + text;
+  box.insertBefore(row, box.firstChild);
+  while (box.childNodes.length > 300) box.removeChild(box.lastChild);
+  // anche nel log del server (pagina admin), a gruppi
+  sent.push(text);
+  if (!sendTimer) sendTimer = setTimeout(flush, 400);
+}
+function flush(){
+  sendTimer = null;
+  var lines = sent.splice(0, sent.length);
+  lines.forEach(function(l){ fetch('/clog?m=' + encodeURIComponent('keytest: ' + l).slice(0, 600)).catch(function(){}); });
+}
+document.getElementById('clear').onclick = function(){ box.innerHTML = ''; };
+
+// ---- tasti ----
+['keydown', 'keyup'].forEach(function(type){
+  window.addEventListener(type, function(e){
+    log('k', type + ' key=' + JSON.stringify(e.key) + ' code=' + e.code + ' keyCode=' + e.keyCode +
+        (e.repeat ? ' (ripetuto)' : '') + (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey ? ' mod=' +
+        [e.ctrlKey && 'ctrl', e.altKey && 'alt', e.metaKey && 'meta', e.shiftKey && 'shift'].filter(Boolean).join('+') : ''));
+  }, true);
+});
+// ---- rotella ----
+var wheelAcc = null;
+window.addEventListener('wheel', function(e){
+  // raggruppa le serie di scatti per non riempire il log
+  if (!wheelAcc) { wheelAcc = {x: 0, y: 0, z: 0, n: 0, mode: e.deltaMode}; setTimeout(function(){
+    var w = wheelAcc; wheelAcc = null;
+    log('t', 'wheel x' + w.n + ' deltaY=' + w.y.toFixed(1) + ' deltaX=' + w.x.toFixed(1) + (w.z ? ' deltaZ=' + w.z.toFixed(1) : '') + ' mode=' + w.mode);
+  }, 250); }
+  wheelAcc.x += e.deltaX; wheelAcc.y += e.deltaY; wheelAcc.z += e.deltaZ; wheelAcc.n++;
+}, {passive: true, capture: true});
+window.addEventListener('auxclick', function(e){ log('t', 'auxclick button=' + e.button); }, true);
+window.addEventListener('mousedown', function(e){ if (e.button !== 0) log('t', 'mousedown button=' + e.button); }, true);
+
+// ---- tocco e pressione prolungata ----
+var pad = document.getElementById('pad'), downAt = 0, longTimer = null;
+pad.addEventListener('pointerdown', function(e){
+  downAt = performance.now(); pad.className = 'down';
+  longTimer = setTimeout(function(){ log('t', 'pressione lunga in corso (>600 ms)'); }, 600);
+  log('t', 'pointerdown tipo=' + e.pointerType + ' pressione=' + (e.pressure || 0).toFixed(2));
+});
+function up(e){
+  if (!downAt) return;
+  clearTimeout(longTimer);
+  var ms = performance.now() - downAt; downAt = 0; pad.className = '';
+  log('t', e.type + ' dopo ' + Math.round(ms) + ' ms' + (ms >= 600 ? '  => PRESSIONE LUNGA' : ''));
+}
+pad.addEventListener('pointerup', up);
+pad.addEventListener('pointercancel', up);
+pad.addEventListener('contextmenu', function(e){ e.preventDefault(); log('t', 'contextmenu (tocco lungo del sistema)'); });
+pad.addEventListener('dblclick', function(){ log('t', 'doppio tocco'); });
+
+// ---- controller (alcuni comandi al volante arrivano cosi' su certi sistemi) ----
+var padState = {};
+window.addEventListener('gamepadconnected', function(e){ log('k', 'controller collegato: ' + e.gamepad.id); });
+(function pollPads(){
+  var pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (var i = 0; i < pads.length; i++) {
+    var g = pads[i]; if (!g) continue;
+    g.buttons.forEach(function(b, j){
+      var k = i + ':' + j;
+      if (b.pressed !== !!padState[k]) { padState[k] = b.pressed; log('k', 'controller ' + i + ' pulsante ' + j + (b.pressed ? ' premuto' : ' rilasciato')); }
+    });
+  }
+  requestAnimationFrame(pollPads);
+})();
+
+// ---- pagina, focus, schermo ----
+document.addEventListener('visibilitychange', function(){ log('s', 'visibilita\': ' + document.visibilityState); });
+window.addEventListener('focus', function(){ log('s', 'focus'); document.getElementById('focus').textContent = 'pagina attiva'; });
+window.addEventListener('blur', function(){ log('s', 'blur (focus perso)'); document.getElementById('focus').textContent = 'focus perso: tocca la pagina'; });
+window.addEventListener('resize', function(){ log('s', 'dimensioni ' + innerWidth + 'x' + innerHeight); });
+window.addEventListener('pagehide', function(){ log('s', 'pagehide'); flush(); });
+document.getElementById('fs').onclick = function(){
+  var d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen;
+  if (!f) { log('s', 'schermo intero non disponibile'); return; }
+  try { var p = f.call(d); if (p && p.catch) p.catch(function(err){ log('s', 'schermo intero rifiutato: ' + err); }); } catch (err) { log('s', 'schermo intero: ' + err); }
+};
+document.addEventListener('fullscreenchange', function(){ log('s', 'schermo intero: ' + !!document.fullscreenElement); });
+document.getElementById('vib').onclick = function(){ log('s', 'vibrazione: ' + (navigator.vibrate ? navigator.vibrate(200) : 'non disponibile')); };
+
+// ---- Media Session ----
+var msOk = 'mediaSession' in navigator;
+document.getElementById('ms').textContent = msOk ? 'Il browser ha la Media Session API.' : 'Il browser NON ha la Media Session API: il riquadro "in riproduzione" non si puo\' comandare dalla pagina.';
+var actx = null, osc = null, audioEl = null;
+function silentWav(sec){
+  var rate = 8000, n = rate * sec, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  function s(o, str){ for (var i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); }
+  s(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); s(8, 'WAVE'); s(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, 'data'); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], {type: 'audio/wav'}));
+}
+function setSession(how){
+  if (!msOk) { log('m', 'Media Session non disponibile'); return; }
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'drive-tube test (' + how + ')', artist: 'drive-tube', album: 'Prova comandi',
+      artwork: [{src: 'https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
+    });
+    navigator.mediaSession.playbackState = 'playing';
+    log('m', 'metadata impostati (' + how + '): guarda il riquadro multimediale della Tesla');
+  } catch (e) { log('m', 'metadata: ' + e); }
+  ['play', 'pause', 'stop', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto', 'skipad'].forEach(function(a){
+    try {
+      navigator.mediaSession.setActionHandler(a, function(d){
+        log('m', 'AZIONE dal sistema: ' + a + (d && d.seekTime != null ? ' seekTime=' + d.seekTime : '') + (d && d.seekOffset ? ' offset=' + d.seekOffset : ''));
+        if (a === 'pause') navigator.mediaSession.playbackState = 'paused';
+        if (a === 'play') navigator.mediaSession.playbackState = 'playing';
+      });
+    } catch (e) { log('m', 'azione ' + a + ' non supportata'); }
+  });
+  try { navigator.mediaSession.setPositionState({duration: 600, playbackRate: 1, position: 42}); } catch (e) {}
+}
+document.getElementById('msWebAudio').onclick = function(){
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    actx.resume();
+    if (!osc) {
+      // tono quasi inudibile: alcuni sistemi creano la sessione solo se c'e' audio vero
+      osc = actx.createOscillator(); var g = actx.createGain(); g.gain.value = 0.001;
+      osc.connect(g); g.connect(actx.destination); osc.start();
+    }
+    log('m', 'Web Audio attivo: ' + actx.state);
+  } catch (e) { log('m', 'Web Audio: ' + e); }
+  setSession('solo Web Audio');
+};
+document.getElementById('msAudio').onclick = function(){
+  if (!audioEl) {
+    var el = audioEl = new Audio(silentWav(2)); el.loop = true;
+    ['play', 'playing', 'pause', 'stalled', 'suspend', 'error', 'emptied'].forEach(function(ev){
+      el.addEventListener(ev, function(){ log('m', '<audio> evento: ' + ev + (el.error ? ' errore ' + el.error.code : '')); });
+    });
+  }
+  audioEl.play().then(function(){ log('m', '<audio> in riproduzione (muto)'); setSession('con <audio>'); })
+    .catch(function(e){ log('m', '<audio> rifiutato: ' + e); });
+};
+document.getElementById('msStop').onclick = function(){
+  if (osc) { try { osc.stop(); } catch (e) {} osc = null; }
+  if (audioEl) { audioEl.pause(); audioEl = null; }
+  if (msOk) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; }
+  log('m', 'fermato, sessione rimossa');
+};
+log('s', 'pagina pronta. ' + navigator.userAgent.slice(0, 160));
+log('s', 'dimensioni ' + innerWidth + 'x' + innerHeight + ', Media Session: ' + (msOk ? 'si' : 'no') + ', Gamepad API: ' + (navigator.getGamepads ? 'si' : 'no'));
+</script>
+</body></html>

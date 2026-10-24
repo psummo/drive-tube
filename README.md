@@ -193,6 +193,7 @@ Releases are published with a `vX.Y` tag: GitHub Actions checks the syntax and c
 Available after login:
 - `/test`: which features the browser offers (WebCodecs, WebAssembly, WebGL, image formats).
 - `/wasmtest`: downloads a few seconds of the current video in H.264, measures how many frames per second the browser can decode and plays it in real time.
+- `/keytest`: shows every event the browser receives from touches (press length, long press), keys (including media and volume keys), the scroll wheel, game controllers and the Media Session API (the system's "now playing" card and its next/previous/pause buttons). Each event is also written to the server log as `keytest: ...`, so a test in the car can be read later from the admin page. Use it to find out which steering-wheel buttons reach a web page.
 
 ## Code layout
 `yt_mjpeg.py` is only the entry point (the systemd service runs it) and holds the version number. The server is the `drivetube/` package; the frontend is in `drivetube/web/`.
@@ -234,6 +235,9 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.1
+- New `/keytest` page (linked from `/test`) to find out which car controls reach the browser: touches and long presses, keys, steering-wheel scroll wheel, controllers, and the Media Session API in two variants (Web Audio only, as drive-tube plays, and with a silent `<audio>` element).
 
 ### 15.0
 - **Code split into modules**: the single 5,400-line file is now the `drivetube/` package. Getting data from YouTube (`youtube.py`) is separate from ffmpeg (`media.py`), the local download proxy and the player logic, and the frontend (HTML, CSS, JavaScript and the WebAssembly decoder) lives in `drivetube/web/` as plain files. `yt_mjpeg.py` stays the entry point, so the systemd service does not change. No change in behaviour: the same end-to-end test (playback in H.264 and MJPEG, audio, search, channels, suggestions, admin) passes before and after.
