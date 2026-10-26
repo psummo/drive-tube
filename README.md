@@ -236,6 +236,10 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.2
+- `/keytest` reworked after the first test in the car: the log is always visible on the right, with the last event in large type. A canvas animation shows whether canvas drawing keeps going while the Tesla shows its "video limited" message. The Media Session check is split into four tests (Media Session only, Web Audio tone only, both, silent `<audio>` plus Media Session) to find what triggers the message. A fifth test opens the real player with `?ms=1`, which turns on the Media Session (title and thumbnail) for that test only.
+- Finding so far: on the Tesla, setting the Media Session triggers "video limited to audio only" even without any `<audio>` or `<video>` element, so the player never uses it unless `?ms=1` is given.
+
 ### 15.1
 - New `/keytest` page (linked from `/test`) to find out which car controls reach the browser: touches and long presses, keys, steering-wheel scroll wheel, controllers, and the Media Session API in two variants (Web Audio only, as drive-tube plays, and with a silent `<audio>` element).
 

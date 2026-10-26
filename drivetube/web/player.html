@@ -233,9 +233,33 @@ function pollTitle(){
   if (document.title && document.title !== 'drive-tube') return;
   if (++titleTries > 20) return;
   fetch('/title').then(function(r){ return r.text(); }).then(function(t){
-    if (t) document.title = t;
+    if (t) { document.title = t; msUpdate(); }
     else setTimeout(pollTitle, 1500);
   }).catch(function(){ setTimeout(pollTitle, 3000); });
+}
+// Prova da /keytest: con ?ms=1 il player si presenta al sistema come "in
+// riproduzione" (Media Session). Senza il parametro non si usa mai: sulla Tesla
+// la Media Session fa comparire "video limitato".
+var MS_TEST = /[?&]ms=1(&|$)/.test(location.search) && 'mediaSession' in navigator;
+function msUpdate(){
+  if (!MS_TEST) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: document.title || 'drive-tube', artist: 'drive-tube',
+      artwork: [{src: 'https://i.ytimg.com/vi/' + VID + '/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
+    });
+    navigator.mediaSession.playbackState = userPaused ? 'paused' : 'playing';
+    ui('mediaSession attiva (prova): ' + document.title);
+  } catch (e) { ui('mediaSession: ' + e); }
+}
+if (MS_TEST) {
+  ['play', 'pause'].forEach(function(a){
+    try { navigator.mediaSession.setActionHandler(a, function(){ ui('mediaSession azione ' + a); togglePlay(); }); } catch (e) {}
+  });
+  ['previoustrack', 'nexttrack', 'seekbackward', 'seekforward'].forEach(function(a){
+    try { navigator.mediaSession.setActionHandler(a, function(){ ui('mediaSession azione ' + a); }); } catch (e) {}
+  });
+  setTimeout(msUpdate, 2500);
 }
 pollTitle();
 function startClock(){
