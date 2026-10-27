@@ -62,12 +62,20 @@
       <button id="tD">D: &lt;audio&gt; muto + Media Session</button>
     </div>
     <div class="row">
+      <button id="tE">E: identica alla prima pagina</button>
+      <button id="tF">F: Media Session + durata/posizione</button>
+      <button id="tG">G: Media Session + comandi "vai a" e "salta"</button>
+    </div>
+    <div class="row">
       <button class="grey" id="msStop">Ferma tutto</button>
       <button class="red" id="reload">Ricarica la pagina</button>
     </div>
     <small>Una prova alla volta, da ferma e poi in marcia (passeggero): dopo ognuna guarda se compare
     "video limitato" e se l'animazione sopra si ferma. Se il blocco resta anche dopo "Ferma tutto", usa
-    "Ricarica la pagina". Mi aspetto che B non blocchi (drive-tube lo usa gia').</small>
+    "Ricarica la pagina". Mi aspetto che B non blocchi (drive-tube lo usa gia').
+    E rifa' esattamente la prova della prima pagina (quella che bloccava subito); F aggiunge alla A solo durata e
+    posizione; G aggiunge alla A solo i comandi "vai a un punto" e "salta pubblicita'". Se E blocca, F e G dicono
+    quale delle due cose fa scattare il blocco. Prima di ogni prova ricarica la pagina, per partire puliti.</small>
   </section>
 
   <section>
@@ -247,6 +255,33 @@ document.getElementById('tD').onclick = function(){
     .catch(function(e){ log('m', 'PROVA D: <audio> rifiutato: ' + e); });
 };
 document.getElementById('msStop').onclick = function(){ stopAll(false); };
+function handlers(list){
+  list.forEach(function(a){
+    try { navigator.mediaSession.setActionHandler(a, function(d){ log('m', 'AZIONE dal sistema: ' + a + (d && d.seekTime != null ? ' seekTime=' + d.seekTime : '')); }); }
+    catch (e) { log('m', 'comando ' + a + ' non supportato'); }
+  });
+}
+function position(){
+  try { navigator.mediaSession.setPositionState({duration: 600, playbackRate: 1, position: 42}); log('m', 'durata/posizione impostate'); }
+  catch (e) { log('m', 'durata/posizione: ' + e); }
+}
+// E: identica alla prova 1 della prima pagina, senza azzerare prima
+document.getElementById('tE').onclick = function(){
+  if (!msOk) { log('m', 'il browser non ha la Media Session'); return; }
+  tone();
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'drive-tube test (solo Web Audio)', artist: 'drive-tube', album: 'Prova comandi',
+      artwork: [{src: 'https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
+    });
+    navigator.mediaSession.playbackState = 'playing';
+  } catch (e) { log('m', 'metadata: ' + e); }
+  handlers(['play', 'pause', 'stop', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto', 'skipad']);
+  position();
+  log('m', 'PROVA E: come la prima pagina (tono, album, tutti i comandi, durata/posizione)');
+};
+document.getElementById('tF').onclick = function(){ stopAll(true); session('F'); position(); log('m', 'PROVA F: Media Session + durata/posizione, niente audio'); };
+document.getElementById('tG').onclick = function(){ stopAll(true); session('G'); handlers(['seekto', 'skipad']); log('m', 'PROVA G: Media Session + comandi vai a/salta, niente audio'); };
 
 log('s', 'pagina pronta, ' + innerWidth + 'x' + innerHeight + ', Media Session: ' + (msOk ? 'si' : 'no'));
 </script>

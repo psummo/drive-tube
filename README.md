@@ -236,6 +236,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.3
+- `/keytest`: three more tests to find what made the first version of the page trigger "video limited" while the reworked one does not: E repeats the first page's test exactly, F adds only duration/position (`setPositionState`) to the plain Media Session, G adds only the seek-to and skip-ad commands.
+
 ### 15.2
 - `/keytest` reworked after the first test in the car: the log is always visible on the right, with the last event in large type. A canvas animation shows whether canvas drawing keeps going while the Tesla shows its "video limited" message. The Media Session check is split into four tests (Media Session only, Web Audio tone only, both, silent `<audio>` plus Media Session) to find what triggers the message. A fifth test opens the real player with `?ms=1`, which turns on the Media Session (title and thumbnail) for that test only.
 - Finding so far: on the Tesla, setting the Media Session triggers "video limited to audio only" even without any `<audio>` or `<video>` element, so the player never uses it unless `?ms=1` is given.
