@@ -236,6 +236,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.5
+- `/keytest` test H: turns the page into a full media source (silent `<audio>`, tone, title, artwork, moving position, every command) to check whether play/pause and next/previous from the car's media card and steering wheel reach the page while the "video limited" message is shown (it sits at the top and does not cover the browser's centre).
+
 ### 15.4
 - Findings from `/keytest` in the car: the Tesla media card shows a page's Media Session (title, artwork) only after the page has played an `<audio>` element, and that same `<audio>` triggers the "video limited" message, which then stays until the page is reloaded. Media Session alone (with or without Web Audio, duration/position or extra commands) neither blocks nor appears in the card. Canvas drawing is never blocked. So drive-tube keeps away from media elements and does not use the Media Session.
 - The player's `?ms=1` test now works like test E: title, thumbnail, real duration and position updated every second, and the media card commands wired to the player (play/pause/stop, seek to, ±10 s). Still off unless `?ms=1` is given.

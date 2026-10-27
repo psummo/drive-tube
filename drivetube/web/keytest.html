@@ -67,6 +67,9 @@
       <button id="tG">G: Media Session + comandi "vai a" e "salta"</button>
     </div>
     <div class="row">
+      <button class="red" id="tH">H: sorgente completa, prova i comandi</button>
+    </div>
+    <div class="row">
       <button class="grey" id="msStop">Ferma tutto</button>
       <button class="red" id="reload">Ricarica la pagina</button>
     </div>
@@ -75,7 +78,10 @@
     "Ricarica la pagina". Mi aspetto che B non blocchi (drive-tube lo usa gia').
     E rifa' esattamente la prova della prima pagina (quella che bloccava subito); F aggiunge alla A solo durata e
     posizione; G aggiunge alla A solo i comandi "vai a un punto" e "salta pubblicita'". Se E blocca, F e G dicono
-    quale delle due cose fa scattare il blocco. Prima di ogni prova ricarica la pagina, per partire puliti.</small>
+    quale delle due cose fa scattare il blocco. Prima di ogni prova ricarica la pagina, per partire puliti.
+    H fa tutto insieme (&lt;audio&gt; muto come D, tono, titolo, immagine, durata e posizione come E, tutti i comandi):
+    la pagina diventa una sorgente come la radio. Poi prova play/pausa e avanti/indietro, sia dal riquadro della
+    musica sia dal volante: ogni comando che arriva compare in alto a destra come "AZIONE dal sistema".</small>
   </section>
 
   <section>
@@ -279,6 +285,49 @@ document.getElementById('tE').onclick = function(){
   handlers(['play', 'pause', 'stop', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto', 'skipad']);
   position();
   log('m', 'PROVA E: come la prima pagina (tono, album, tutti i comandi, durata/posizione)');
+};
+document.getElementById('tH').onclick = function(){
+  if (!msOk) { log('m', 'il browser non ha la Media Session'); return; }
+  stopAll(true);
+  tone();
+  var el = audioEl = new Audio(silentWav(2)); el.loop = true;
+  ['play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error'].forEach(function(ev){
+    el.addEventListener(ev, function(){ log('m', '<audio> ' + ev + (el.error ? ' errore ' + el.error.code : '')); });
+  });
+  var pos = 42, ticker = null;
+  function state(){
+    try {
+      navigator.mediaSession.playbackState = el.paused ? 'paused' : 'playing';
+      navigator.mediaSession.setPositionState({duration: 600, playbackRate: 1, position: pos});
+    } catch (e) {}
+  }
+  var acts = {
+    play: function(){ el.play().catch(function(e){ log('m', 'play rifiutato: ' + e); }); },
+    pause: function(){ el.pause(); },
+    stop: function(){ el.pause(); },
+    nexttrack: function(){ pos = Math.min(590, pos + 30); },
+    previoustrack: function(){ pos = Math.max(0, pos - 30); },
+    seekforward: function(d){ pos = Math.min(590, pos + ((d && d.seekOffset) || 10)); },
+    seekbackward: function(d){ pos = Math.max(0, pos - ((d && d.seekOffset) || 10)); },
+    seekto: function(d){ if (d && d.seekTime != null) pos = d.seekTime; }
+  };
+  el.play().then(function(){
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'drive-tube test H', artist: 'drive-tube', album: 'Prova comandi',
+      artwork: [{src: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
+    });
+    Object.keys(acts).forEach(function(a){
+      try {
+        navigator.mediaSession.setActionHandler(a, function(d){
+          log('m', 'AZIONE dal sistema: ' + a + (d && d.seekTime != null ? ' ' + Math.round(d.seekTime) + 's' : ''));
+          acts[a](d); setTimeout(state, 200);
+        });
+      } catch (e) { log('m', 'comando ' + a + ' non supportato'); }
+    });
+    state();
+    ticker = setInterval(function(){ if (audioEl !== el) { clearInterval(ticker); return; } if (!el.paused) pos = Math.min(599, pos + 1); state(); }, 1000);
+    log('m', 'PROVA H: sorgente completa. Ora prova play/pausa e avanti/indietro dal riquadro e dal volante');
+  }).catch(function(e){ log('m', 'PROVA H: <audio> rifiutato: ' + e); });
 };
 document.getElementById('tF').onclick = function(){ stopAll(true); session('F'); position(); log('m', 'PROVA F: Media Session + durata/posizione, niente audio'); };
 document.getElementById('tG').onclick = function(){ stopAll(true); session('G'); handlers(['seekto', 'skipad']); log('m', 'PROVA G: Media Session + comandi vai a/salta, niente audio'); };
