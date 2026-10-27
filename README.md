@@ -236,6 +236,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.6
+- `/keytest` test I: like H, but the silent `<audio>` really lasts 10 minutes (H looped a 2-second clip, which the car may see as a track that keeps restarting and buffering); duration and position come from the audio itself.
+
 ### 15.5
 - `/keytest` test H: turns the page into a full media source (silent `<audio>`, tone, title, artwork, moving position, every command) to check whether play/pause and next/previous from the car's media card and steering wheel reach the page while the "video limited" message is shown (it sits at the top and does not cover the browser's centre).
 

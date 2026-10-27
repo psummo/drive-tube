@@ -68,6 +68,7 @@
     </div>
     <div class="row">
       <button class="red" id="tH">H: sorgente completa, prova i comandi</button>
+      <button class="red" id="tI">I: come H ma con audio lungo 10 minuti</button>
     </div>
     <div class="row">
       <button class="grey" id="msStop">Ferma tutto</button>
@@ -81,7 +82,9 @@
     quale delle due cose fa scattare il blocco. Prima di ogni prova ricarica la pagina, per partire puliti.
     H fa tutto insieme (&lt;audio&gt; muto come D, tono, titolo, immagine, durata e posizione come E, tutti i comandi):
     la pagina diventa una sorgente come la radio. Poi prova play/pausa e avanti/indietro, sia dal riquadro della
-    musica sia dal volante: ogni comando che arriva compare in alto a destra come "AZIONE dal sistema".</small>
+    musica sia dal volante: ogni comando che arriva compare in alto a destra come "AZIONE dal sistema".
+    I e' come H, ma l'&lt;audio&gt; muto dura davvero 10 minuti (in H era un pezzo di 2 secondi ripetuto, che per
+    l'auto poteva sembrare una traccia che ricomincia di continuo): durata e posizione vengono dall'audio stesso.</small>
   </section>
 
   <section>
@@ -328,6 +331,59 @@ document.getElementById('tH').onclick = function(){
     ticker = setInterval(function(){ if (audioEl !== el) { clearInterval(ticker); return; } if (!el.paused) pos = Math.min(599, pos + 1); state(); }, 1000);
     log('m', 'PROVA H: sorgente completa. Ora prova play/pausa e avanti/indietro dal riquadro e dal volante');
   }).catch(function(e){ log('m', 'PROVA H: <audio> rifiutato: ' + e); });
+};
+// WAV muto lungo: 8 bit, 8000 Hz (10 minuti = 4,8 MB, generato nel browser)
+function silentWav8(sec){
+  var rate = 8000, n = rate * sec, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+  function s(o, str){ for (var i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); }
+  s(0, 'RIFF'); v.setUint32(4, 36 + n, true); s(8, 'WAVE'); s(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate, true);
+  v.setUint16(32, 1, true); v.setUint16(34, 8, true); s(36, 'data'); v.setUint32(40, n, true);
+  new Uint8Array(buf, 44).fill(128);  // 128 = silenzio con 8 bit
+  return URL.createObjectURL(new Blob([buf], {type: 'audio/wav'}));
+}
+document.getElementById('tI').onclick = function(){
+  if (!msOk) { log('m', 'il browser non ha la Media Session'); return; }
+  stopAll(true);
+  tone();
+  var el = audioEl = new Audio(silentWav8(600));
+  ['play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error', 'durationchange'].forEach(function(ev){
+    el.addEventListener(ev, function(){ log('m', '<audio> ' + ev + (ev === 'durationchange' ? ' ' + Math.round(el.duration) + 's' : '') + (el.error ? ' errore ' + el.error.code : '')); });
+  });
+  function state(){
+    try {
+      navigator.mediaSession.playbackState = el.paused ? 'paused' : 'playing';
+      if (el.duration) navigator.mediaSession.setPositionState({duration: el.duration, playbackRate: 1, position: Math.min(el.currentTime, el.duration)});
+    } catch (e) {}
+  }
+  function jump(t){ el.currentTime = Math.max(0, Math.min((el.duration || 600) - 1, t)); }
+  var acts = {
+    play: function(){ el.play().catch(function(e){ log('m', 'play rifiutato: ' + e); }); },
+    pause: function(){ el.pause(); },
+    stop: function(){ el.pause(); },
+    nexttrack: function(){ jump(el.currentTime + 30); },
+    previoustrack: function(){ jump(el.currentTime - 30); },
+    seekforward: function(d){ jump(el.currentTime + ((d && d.seekOffset) || 10)); },
+    seekbackward: function(d){ jump(el.currentTime - ((d && d.seekOffset) || 10)); },
+    seekto: function(d){ if (d && d.seekTime != null) jump(d.seekTime); }
+  };
+  el.play().then(function(){
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'drive-tube test I', artist: 'drive-tube', album: 'Prova comandi',
+      artwork: [{src: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
+    });
+    Object.keys(acts).forEach(function(a){
+      try {
+        navigator.mediaSession.setActionHandler(a, function(d){
+          log('m', 'AZIONE dal sistema: ' + a + (d && d.seekTime != null ? ' ' + Math.round(d.seekTime) + 's' : ''));
+          acts[a](d); setTimeout(state, 200);
+        });
+      } catch (e) { log('m', 'comando ' + a + ' non supportato'); }
+    });
+    state();
+    var ticker = setInterval(function(){ if (audioEl !== el) { clearInterval(ticker); return; } state(); }, 1000);
+    log('m', 'PROVA I: sorgente con audio di 10 minuti. Prova play/pausa e avanti/indietro');
+  }).catch(function(e){ log('m', 'PROVA I: <audio> rifiutato: ' + e); });
 };
 document.getElementById('tF').onclick = function(){ stopAll(true); session('F'); position(); log('m', 'PROVA F: Media Session + durata/posizione, niente audio'); };
 document.getElementById('tG').onclick = function(){ stopAll(true); session('G'); handlers(['seekto', 'skipad']); log('m', 'PROVA G: Media Session + comandi vai a/salta, niente audio'); };
