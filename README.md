@@ -237,7 +237,7 @@ print(search_yt("lofi"))
 ## Changelog
 
 ### 15.4
-- Findings from `/keytest` in the car: the Tesla does show the browser's Media Session in its media card (title and artwork appear with test E); the "video limited" message is triggered by an `<audio>` element and then stays until the page is reloaded; canvas drawing is never blocked; sessions without real audio and a moving position fall back to the previous source (e.g. Spotify) after a few seconds.
+- Findings from `/keytest` in the car: the Tesla media card shows a page's Media Session (title, artwork) only after the page has played an `<audio>` element, and that same `<audio>` triggers the "video limited" message, which then stays until the page is reloaded. Media Session alone (with or without Web Audio, duration/position or extra commands) neither blocks nor appears in the card. Canvas drawing is never blocked. So drive-tube keeps away from media elements and does not use the Media Session.
 - The player's `?ms=1` test now works like test E: title, thumbnail, real duration and position updated every second, and the media card commands wired to the player (play/pause/stop, seek to, ±10 s). Still off unless `?ms=1` is given.
 
 ### 15.3
