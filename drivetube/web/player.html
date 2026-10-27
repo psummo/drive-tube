@@ -238,26 +238,51 @@ function pollTitle(){
   }).catch(function(){ setTimeout(pollTitle, 3000); });
 }
 // Prova da /keytest: con ?ms=1 il player si presenta al sistema come "in
-// riproduzione" (Media Session). Senza il parametro non si usa mai: sulla Tesla
-// la Media Session fa comparire "video limitato".
+// riproduzione" (Media Session), come la prova E: titolo, copertina, durata e
+// posizione che avanzano, comandi del riquadro collegati al player. Senza il
+// parametro non si usa mai (sulla Tesla un <audio> fa comparire "video limitato").
 var MS_TEST = /[?&]ms=1(&|$)/.test(location.search) && 'mediaSession' in navigator;
 function msUpdate(){
   if (!MS_TEST) return;
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: document.title || 'drive-tube', artist: 'drive-tube',
+      title: document.title || 'drive-tube', artist: 'drive-tube', album: 'drive-tube',
       artwork: [{src: 'https://i.ytimg.com/vi/' + VID + '/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
     });
-    navigator.mediaSession.playbackState = userPaused ? 'paused' : 'playing';
+    msState();
     ui('mediaSession attiva (prova): ' + document.title);
   } catch (e) { ui('mediaSession: ' + e); }
 }
+function msState(){
+  if (!MS_TEST) return;
+  try {
+    navigator.mediaSession.playbackState = userPaused ? 'paused' : 'playing';
+    if (DURATION && !IS_LIVE) navigator.mediaSession.setPositionState({duration: DURATION, playbackRate: 1, position: Math.max(0, Math.min(pos, DURATION))});
+  } catch (e) {}
+}
+function msSeek(sec){
+  if (!DURATION || IS_LIVE) return;
+  sec = Math.floor(Math.max(0, Math.min(DURATION - 1, sec)));
+  pos = sec; draw();
+  ensureCtx().then(function(){ beginAt(sec); });
+}
 if (MS_TEST) {
-  ['play', 'pause'].forEach(function(a){
-    try { navigator.mediaSession.setActionHandler(a, function(){ ui('mediaSession azione ' + a); togglePlay(); }); } catch (e) {}
-  });
-  ['previoustrack', 'nexttrack', 'seekbackward', 'seekforward'].forEach(function(a){
-    try { navigator.mediaSession.setActionHandler(a, function(){ ui('mediaSession azione ' + a); }); } catch (e) {}
+  var msAct = {
+    play: function(){ if (userPaused) togglePlay(); },
+    pause: function(){ if (!userPaused) togglePlay(); },
+    stop: function(){ if (!userPaused) togglePlay(); },
+    seekto: function(d){ if (d && d.seekTime != null) msSeek(d.seekTime); },
+    seekforward: function(d){ msSeek(pos + ((d && d.seekOffset) || 10)); },
+    seekbackward: function(d){ msSeek(pos - ((d && d.seekOffset) || 10)); },
+    nexttrack: function(){}, previoustrack: function(){}
+  };
+  Object.keys(msAct).forEach(function(a){
+    try {
+      navigator.mediaSession.setActionHandler(a, function(d){
+        ui('mediaSession azione ' + a + (d && d.seekTime != null ? ' ' + Math.round(d.seekTime) + 's' : ''));
+        msAct[a](d); setTimeout(msState, 1200);
+      });
+    } catch (e) { ui('mediaSession: comando ' + a + ' non supportato'); }
   });
   setTimeout(msUpdate, 2500);
 }
@@ -270,6 +295,7 @@ function startClock(){
     if (!IS_LIVE && DURATION && pos > DURATION) pos = DURATION;
     draw();
     if (!IS_LIVE) history.replaceState(null, '', '/?watch=' + VID + '&t=' + Math.floor(pos));
+    msState();
   }, 1000);
 }
 function stopClock(){ playing = false; }
