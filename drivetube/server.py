@@ -89,6 +89,7 @@ from .player import (
     stop_all,
 )
 from .update import check_update, install_update, restart_self
+from .report import delete_report, list_reports, read_report, save_report
 from .pages import KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -769,7 +770,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if not is_admin(hdr):
-            if path.startswith("/admin/api/") or path == "/admin/log":
+            if path.startswith("/admin/api/") or path in ("/admin/log", "/admin/report"):
                 self.json_out({"ok": False, "error": "accesso admin scaduto, ricarica la pagina"}, 403)
             else:
                 self.page_login(admin=True)
@@ -819,6 +820,25 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/api/ytdlp":
             self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
             return
+        if path == "/admin/api/reports":
+            self.json_out({"reports": list_reports()})
+            return
+        if path == "/admin/report":
+            rid = (parse_qs(u.query).get("id") or [""])[0]
+            text = read_report(rid)
+            if text is None:
+                self.send_error(404)
+                return
+            body = text.encode("utf-8", "replace")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            if parse_qs(u.query).get("dl"):
+                self.send_header("Content-Disposition", 'attachment; filename="drive-tube-%s.txt"' % rid)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/admin/log":
             try:
                 lines = open(os.path.expanduser("~/yt.log")).read().splitlines()
@@ -845,6 +865,22 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(n)
         if path == "/login":
             self.post_login(raw)
+        elif path == "/report":
+            if not self.enter(path):
+                return
+            try:
+                try:
+                    data = json.loads(raw.decode("utf-8") or "{}")
+                except ValueError:
+                    data = {}
+                data = data if isinstance(data, dict) else {}
+                client = data.get("client") if isinstance(data.get("client"), dict) else {}
+                self.json_out({"ok": True, "id": save_report(cur(), str(data.get("note") or ""), client)})
+            except Exception as e:
+                _bprint("segnalazione non salvata:", e, flush=True)
+                self.json_out({"ok": False, "error": str(e)}, 500)
+            finally:
+                _tls.s = None
         elif path == "/admin/login":
             self.post_admin_login(raw)
         elif path == "/admin/cookies":
@@ -956,6 +992,10 @@ class Handler(BaseHTTPRequestHandler):
             if x:
                 close_session(x)
             self.json_out({"ok": True, "msg": "sessione chiusa" if x else "sessione gia' chiusa"})
+            return
+        if what == "report/del":
+            ok = delete_report(str(data.get("id") or ""))
+            self.json_out({"ok": ok, "msg": "segnalazione eliminata" if ok else "", "error": "" if ok else "non trovata"})
             return
         if what == "update/install":
             try:

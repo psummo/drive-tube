@@ -281,6 +281,9 @@ def stream_urls(page_url, fmt, net=None):
         print(err, flush=True)
         kind = "bot" if ("Sign in to confirm" in err or "not a bot" in err) else "failed"
         raise StreamError(kind, err.strip().splitlines()[-1][:200] if err.strip() else "yt-dlp fallito")
+    warn = [x for x in (p.stderr or "").splitlines() if x.startswith("WARNING")]
+    for x in warn[:4]:
+        print("yt-dlp:", x[:220], flush=True)
     lines = [x for x in p.stdout.strip().splitlines() if x.startswith("http")]
     if not lines:
         raise StreamError("none", "nessuno stream")

@@ -8,7 +8,7 @@ import time
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .config import UA
-from .context import _bprint
+from .context import _tls, print
 from .access import ACCESS
 from .netutil import QuietServer
 
@@ -41,7 +41,8 @@ def px_url(url):
     with _px_lock:
         for k in [k for k, v in _px.items() if now - v["t"] > 6 * 3600]:
             _px.pop(k, None)
-        _px[tok] = {"url": url, "t": now, "size": 0, "forbidden": False}
+        _px[tok] = {"url": url, "t": now, "size": 0, "forbidden": False,
+                    "s": getattr(_tls, "s", None), "slow": 0}
     return "http://127.0.0.1:%d/%s" % (_px_port[0], tok)
 
 
@@ -83,6 +84,21 @@ def _px_open(e, a, b):
     raise err
 
 
+SLOW_KBPS = 150  # sotto questa velocita' un pezzo intero da YouTube e' sospetto
+
+
+def px_speed(e, nbytes, secs):
+    """Registra quando YouTube manda un pezzo molto piu' lentamente del normale:
+    succede quando rallenta lo stream (di solito yt-dlp da aggiornare)."""
+    if nbytes < (1 << 20) or secs <= 0:
+        return
+    kbps = nbytes / 1024.0 / secs
+    if kbps < SLOW_KBPS:
+        e["slow"] += 1
+        print("stream youtube LENTO: %.0f KB/s (%.1f MB in %.0f s, %d volte) - prova ad aggiornare yt-dlp dall'admin"
+              % (kbps, nbytes / 1048576.0, secs, e["slow"]), flush=True)
+
+
 class ChunkProxy(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -94,6 +110,13 @@ class ChunkProxy(BaseHTTPRequestHandler):
         if not e:
             self.send_error(404)
             return
+        _tls.s = e.get("s")  # le righe di log vanno alla sessione che ha aperto lo stream
+        try:
+            self._serve(e)
+        finally:
+            _tls.s = None
+
+    def _serve(self, e):
         m = re.match(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
         start = int(m.group(1)) if m else 0
         end = int(m.group(2)) if m and m.group(2) else None
@@ -101,11 +124,11 @@ class ChunkProxy(BaseHTTPRequestHandler):
         try:
             r = _px_open(e, start, first)
         except urllib.error.HTTPError as x:
-            _bprint("stream youtube: HTTP %d" % x.code, flush=True)
+            print("stream youtube: HTTP %d" % x.code, flush=True)
             self.send_error(x.code)  # ffmpeg vede "403 Forbidden" e si riparte
             return
         except Exception as x:
-            _bprint("stream youtube:", x, flush=True)
+            print("stream youtube:", x, flush=True)
             self.send_error(502)
             return
         mm = re.search(r"/(\d+)\s*$", r.headers.get("Content-Range", ""))
@@ -150,12 +173,14 @@ class ChunkProxy(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         pos = start
+        piece_at, piece_from = time.time(), start
         while pos <= last:
             if r is None:
+                piece_at, piece_from = time.time(), pos
                 try:
                     r = _px_open(e, pos, min(pos + CHUNK - 1, last))
                 except Exception as x:
-                    _bprint("stream youtube: pezzo da %d non riuscito: %s" % (pos, x), flush=True)
+                    print("stream youtube: pezzo da %d non riuscito: %s" % (pos, x), flush=True)
                     return  # ffmpeg si riconnette da qui (o riparte con URL nuovi)
             try:
                 while pos <= last:
@@ -171,16 +196,17 @@ class ChunkProxy(BaseHTTPRequestHandler):
                         return  # ffmpeg ha chiuso (seek, pausa, fine)
                     pos += len(buf)
             except Exception as x:
-                _bprint("stream youtube: connessione caduta a %d, riprendo: %s" % (pos, x), flush=True)
+                print("stream youtube: connessione caduta a %d, riprendo: %s" % (pos, x), flush=True)
             r.close()
             r = None
+            px_speed(e, pos - piece_from, time.time() - piece_at)
 
 
 def start_chunk_proxy():
     try:
         srv = QuietServer(("127.0.0.1", 0), ChunkProxy)
     except Exception as x:
-        _bprint("proxy stream non avviato (ffmpeg scarica direttamente):", x, flush=True)
+        print("proxy stream non avviato (ffmpeg scarica direttamente):", x, flush=True)
         return
     _px_port[0] = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()

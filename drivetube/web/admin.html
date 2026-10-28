@@ -104,6 +104,11 @@ small{color:#999}
   <button id="netproxybtn">Salva proxy</button>
 </div>
 
+<h2>Segnalazioni</h2>
+<p><small>Inviate dal player con "Segnala un problema" (nel pannello delle impostazioni): stato della sessione, del
+browser e ultime righe di log, senza dati personali. Apri o scarica quella che ti serve e mandala a chi ti aiuta.</small></p>
+<table id="reps"><thead><tr><th>Quando</th><th>Chi</th><th>Nota</th><th></th></tr></thead><tbody></tbody></table>
+
 <h2>Log</h2>
 <div class="row"><button id="logbtn">Mostra il log</button></div>
 <div id="log"></div>
@@ -307,6 +312,26 @@ $('netdiag').onclick = function(){
 $('netreset').onclick = function(){ api('yt/net', {client: '', ipv4: false}).then(function(x){ done(x); loadNet(); }); };
 $('netproxybtn').onclick = function(){ api('yt/net', {proxy: $('netproxy').value.trim()}).then(function(x){ done(x); loadNet(); }); };
 loadNet();
+function loadReps(){
+  api('reports').then(function(j){
+    var tb = $('reps').querySelector('tbody');
+    tb.innerHTML = '';
+    var list = (j && j.reports) || [];
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="4" class="na">nessuna segnalazione</td></tr>'; return; }
+    list.forEach(function(r){
+      var tr = document.createElement('tr');
+      var when = new Date(r.t * 1000).toLocaleString();
+      tr.innerHTML = '<td>' + esc(when) + '</td><td>' + esc(r.who) + '</td><td>' + esc(r.note || '-') + '</td>' +
+        '<td><a href="/admin/report?id=' + encodeURIComponent(r.id) + '" target="_blank">Apri</a> &nbsp; ' +
+        '<a href="/admin/report?dl=1&amp;id=' + encodeURIComponent(r.id) + '">Scarica</a> &nbsp; ' +
+        '<button class="warn">Elimina</button></td>';
+      tr.querySelector('button').onclick = function(){ api('report/del', {id: r.id}).then(function(x){ done(x); loadReps(); }); };
+      tb.appendChild(tr);
+    });
+  });
+}
+loadReps();
+setInterval(loadReps, 30000);
 $('pottest').onclick = function(){
   var b = $('pottest'), out = $('potout'); b.disabled = true;
   out.style.display = 'block'; out.textContent = 'chiedo a YouTube un video di prova, puo\u0027 servire un minuto...';

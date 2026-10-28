@@ -236,6 +236,10 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.7
+- **Segnala un problema**: in the player's settings panel (gear icon) a button, with an optional note, saves a report on the server: the session's state (format, position, ffmpeg, errors, server speed), the browser's state (screen, network, what is on screen, audio, buffered video) and the last log lines of the player, of the session and of the server, already stripped of personal data. Reports are listed in the admin page (*Segnalazioni*) to open, download or delete; the latest 50 are kept in `~/.config/drive-tube/reports/`.
+- Clearer log when YouTube slows the stream down (the usual cause of endless loading that a page reload does not fix, typically solved by updating yt-dlp): the download proxy logs `stream youtube LENTO: N KB/s` for slow pieces, and yt-dlp warnings are logged even when it succeeds.
+
 ### 15.6
 - `/keytest` test I: like H, but the silent `<audio>` really lasts 10 minutes (H looped a 2-second clip, which the car may see as a track that keeps restarting and buffering); duration and position come from the audio itself.
 

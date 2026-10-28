@@ -37,7 +37,8 @@
   }
   #side.on{transform:translateX(0);pointer-events:auto}
   #panel{flex:1;overflow:auto;padding:14px 14px 24px}
-  #panel-title{font-size:22px;font-weight:bold;margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid #333}
+  #panel-title,#reptitle{font-size:22px;font-weight:bold;margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid #333}
+  #reptitle{margin-top:22px}
   .row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #333}
   .row p{margin:0;flex:1}
   .row b{display:block}
@@ -55,6 +56,9 @@
   #resetcfg{width:100%;height:44px;margin-top:10px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
   #logbox{white-space:pre-wrap;font:12px/1.4 monospace;color:#ddd}
   #nexts a, #nexts a:visited, #nexts a:hover{color:#fff;text-decoration:none}
+  #repbox textarea{width:100%;box-sizing:border-box;font-size:16px;padding:8px;border-radius:8px;border:0;background:#222;color:#fff}
+  #repbtn{width:100%;height:48px;margin-top:8px;border:0;border-radius:8px;background:#b45309;color:#fff;font-size:18px}
+  #repmsg{color:#fc6;margin:8px 0 0}
   #savecfg{width:100%;height:48px;margin-top:16px;border:0;border-radius:8px;background:#fff;color:#000;font-size:18px}
   #freeze{position:fixed;inset:0;width:100%;height:100%;display:none;z-index:2;background:#000}
   #pp{
@@ -193,8 +197,13 @@ function pollRate(){
     }
   }).catch(function(){});
 }
+// ultime righe del player, mandate con "Segnala un problema"
+var uiRing = [];
 function ui(line){
   try { fetch('/clog?m=' + encodeURIComponent(String(line).slice(0, 200))).catch(function(){}); } catch (e) {}
+  var d = new Date();
+  uiRing.push(('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2) + ' ' + String(line).slice(0, 200));
+  if (uiRing.length > 150) uiRing.shift();
   var box = document.getElementById('log');
   var row = document.createElement('div');
   row.textContent = line;
@@ -1561,6 +1570,46 @@ function drawCfg(){
     location.reload();
   };
   box.appendChild(reset);
+  // segnala un problema: stato del browser e ultime righe, salvati sul server
+  var rep = document.createElement('div');
+  rep.id = 'repbox';
+  rep.innerHTML = '<p id="reptitle">Segnala un problema</p>' +
+    '<textarea id="repnote" rows="3" placeholder="Cosa e\' successo? (facoltativo)"></textarea>' +
+    '<button id="repbtn" type="button">Invia segnalazione</button><p id="repmsg"></p>';
+  box.appendChild(rep);
+  document.getElementById('repbtn').onclick = function(ev){
+    ev.stopPropagation();
+    sendReport(document.getElementById('repnote').value);
+  };
+}
+function clientState(){
+  var c = {};
+  function put(k, f){ try { c[k] = f(); } catch (e) { c[k] = 'errore: ' + e; } }
+  put('browser', function(){ return navigator.userAgent; });
+  put('schermo', function(){ return innerWidth + 'x' + innerHeight + ' (dpr ' + (window.devicePixelRatio || 1) + ')'; });
+  put('rete', function(){ var n = navigator.connection; return (navigator.onLine ? 'online' : 'OFFLINE') + (n ? ' ' + (n.effectiveType || '') + ' ' + (n.downlink || '?') + ' Mbit/s rtt ' + (n.rtt || '?') + ' ms' : ''); });
+  put('formato', function(){ return vmode; });
+  put('posizione', function(){ return Math.round(pos) + ' s su ' + DURATION + ' s' + (IS_LIVE ? ' (live)' : ''); });
+  put('stato', function(){ return (userPaused ? 'in pausa' : 'in riproduzione') + (stalled ? ', FERMO per caricamento' : '') + (playing ? '' : ', orologio fermo'); });
+  put('messaggio a schermo', function(){ var o = document.getElementById('overlay'); return o.style.display === 'none' ? '-' : (document.getElementById('msg').textContent || '-'); });
+  put('riga in alto', function(){ return document.getElementById('hud').textContent || '-'; });
+  put('velocita\'', function(){ return rateMb ? rateMb.toFixed(2) + ' MB/s' : '-'; });
+  put('audio', function(){ return actx ? actx.state + ', ' + aDiag.kb.toFixed(0) + ' KB, ' + aDiag.blk + ' blocchi, errori ' + aDiag.err : 'non avviato'; });
+  if (vmode === 'h264' && typeof hs !== 'undefined' && hs) put('video pronto', function(){ return hAhead().toFixed(1) + ' s'; });
+  c.log = uiRing.slice();
+  return c;
+}
+function sendReport(note){
+  var m = document.getElementById('repmsg');
+  if (m) m.textContent = 'invio...';
+  fetch('/report', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({note: note || '', client: clientState()})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (m) m.textContent = j.ok ? 'Inviata, grazie. Si trova nella pagina admin (' + j.id + ').' : 'Non inviata: ' + (j.error || '?');
+      if (j.ok) { var t = document.getElementById('repnote'); if (t) t.value = ''; }
+    })
+    .catch(function(e){ if (m) m.textContent = 'Non inviata: ' + e; });
 }
 document.getElementById('menu').addEventListener('click', function(ev){
   ev.preventDefault();

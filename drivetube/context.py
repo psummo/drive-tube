@@ -51,12 +51,19 @@ def privacy(text):
     return text
 
 
+# ultime righe di log in memoria (gia' ripulite dai dati personali), per le
+# segnalazioni dal player: tutte le sessioni insieme e, in Session.logs, ognuna
+LOG_RING = deque(maxlen=3000)
+
+
 def print(*a, **k):
     # nel log ogni riga di una sessione porta il suo nome (codice, non il video)
     s = getattr(_tls, "s", None)
     line = privacy(" ".join(str(x) for x in a))
     if s is not None:
         line = "[%s] %s" % (s.tag, line)
+        s.logs.append(time.strftime("%H:%M:%S ") + line)
+    LOG_RING.append(time.strftime("%H:%M:%S ") + line)
     k.pop("sep", None)
     _bprint(line, **k)
 
@@ -101,6 +108,7 @@ class Session:
         self.fifo_v = base + "_v.fifo"
         self.fifo_a = base + "_a.fifo"
         self.state = new_state()
+        self.logs = deque(maxlen=600)
 
 
 SESSIONS = {}
