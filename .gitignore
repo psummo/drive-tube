@@ -4,3 +4,4 @@ __pycache__/
 .backup/
 .update-*/
 yt_mjpeg.py.bak
+.yt-cookies-*

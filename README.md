@@ -270,6 +270,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.10
+- **Cookies no longer overwritten by parallel yt-dlp runs**: yt-dlp rewrites its cookie file when it finishes, with the values YouTube has rotated. drive-tube runs several yt-dlp at once (search, the personal feed lists, video info), and each one wrote back the cookies it had read at the start, so a fresh rotation was often replaced by an older value; Google may close a session when a rotated-out cookie is used again. Now every yt-dlp works on its own private copy and only the cookies it actually changed are merged back into `~/cookies.txt`, one at a time under a lock (atomic write, mode 600). In a simulation with 6 parallel runs per home page, the file used to miss the latest rotation in most rounds; now only when two runs rotate at the same moment.
+
 ### 15.9
 - **YouTube through your home connection**: the stream download now works through a SOCKS5 proxy too (before, only http proxies), so an SSH tunnel from a device at home (`tunnel/home-tunnel.sh`, see [YouTube through your home connection](#youtube-through-your-home-connection-recommended)) makes all YouTube traffic leave from the home IP instead of the datacenter's. If the proxy stops answering, drive-tube goes back to the server's own address within 15 seconds and says so in the log; the admin page shows whether the proxy is up, and the network diagnosis tests the stream through it.
 

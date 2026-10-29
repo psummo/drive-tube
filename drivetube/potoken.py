@@ -14,7 +14,7 @@ from .context import _bprint
 from .access import ACCESS
 from .tools import NODE_MIN, find_node, node_env, node_install, tool_version
 from .netutil import active_proxy, open_url
-from .youtube import YT_VARIANTS, yt_cmd, yt_net_label
+from .youtube import run_yt, YT_VARIANTS, yt_cmd, yt_net_label
 
 
 # ================= PO token (bgutil) =================
@@ -253,9 +253,8 @@ def pot_install_plugin():
 def pot_test(net=None):
     """Chiede a yt-dlp i formati di un video breve e riporta le righe utili."""
     try:
-        p = subprocess.run(
-            yt_cmd("-v", "--simulate", "--no-playlist", "-f", "bv*[height<=360]+ba/b",
-                   "--user-agent", UA, POT_TEST_VIDEO, net=net),
+        p = run_yt("-v", "--simulate", "--no-playlist", "-f", "bv*[height<=360]+ba/b",
+                   "--user-agent", UA, POT_TEST_VIDEO, net=net,
             capture_output=True, text=True, timeout=120,
         )
     except Exception as e:
@@ -285,9 +284,8 @@ def pot_test(net=None):
 def stream_probe(net=None):
     """Prende l'URL dello stream e ne scarica i primi KB, come fara' ffmpeg."""
     try:
-        p = subprocess.run(
-            yt_cmd("-g", "--no-playlist", "-f", "bv*[vcodec^=avc1][height<=360]/b",
-                   "--user-agent", UA, POT_TEST_VIDEO, net=net),
+        p = run_yt("-g", "--no-playlist", "-f", "bv*[vcodec^=avc1][height<=360]/b",
+                   "--user-agent", UA, POT_TEST_VIDEO, net=net,
             capture_output=True, text=True, timeout=120,
         )
         urls = [x for x in p.stdout.splitlines() if x.startswith("http")]

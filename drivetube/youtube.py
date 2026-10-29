@@ -5,7 +5,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from .config import UA, COOKIES, feed_cache
 from .context import in_session, print
@@ -79,12 +81,12 @@ def yt_net_label(n):
     return t
 
 
-def yt_cmd(*args, net=None, cookies=None):
-    """Comando yt-dlp con rete e cookie scelti in admin. cookies=True/False
-    forza l'uso dei cookie (per la verifica), altrimenti decide la sessione."""
+def yt_cmd(*args, net=None, cookie_file=None):
+    """Comando yt-dlp con la rete scelta in admin e, se dato, un file di cookie.
+    Per lanciarlo usare run_yt(), che gestisce i cookie in modo sicuro."""
     cmd = [ytdlp_bin()]
-    if (use_cookies() if cookies is None else (cookies and os.path.isfile(COOKIES))):
-        cmd += ["--cookies", COOKIES]
+    if cookie_file:
+        cmd += ["--cookies", cookie_file]
     cmd += yt_net(net)
     # yt-dlp attiva da solo solo Deno: se c'e' soltanto Node va abilitato,
     # altrimenti alcune richieste a YouTube falliscono
@@ -96,13 +98,99 @@ def yt_cmd(*args, net=None, cookies=None):
     return cmd
 
 
+# ---- cookie: una copia per ogni yt-dlp, rotazioni riunite in modo sicuro ----
+# yt-dlp a fine lavoro riscrive il file dei cookie con i valori che YouTube ha
+# ruotato. Con piu' yt-dlp in parallelo (ricerca, feed, info del video...) uno
+# poteva sovrascrivere le rotazioni di un altro con valori vecchi, o leggere il
+# file mentre veniva scritto; Google, se vede riusare un cookie gia' ruotato,
+# puo' chiudere la sessione. Ora ogni yt-dlp lavora su una copia privata e i
+# cookie cambiati vengono riuniti nel file principale uno alla volta.
+_ck_lock = threading.Lock()
+_ck_stats = {"merged": 0, "t": 0.0}
+
+
+def _ck_parse(text):
+    out = {}
+    for line in text.splitlines():
+        if not line.strip() or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+            continue
+        f = line.split("\t")
+        if len(f) != 7:
+            continue
+        dom = f[0][len("#HttpOnly_"):] if f[0].startswith("#HttpOnly_") else f[0]
+        out[(dom.lstrip("."), f[2], f[5])] = line
+    return out
+
+
+def cookie_checkout():
+    """(testo originale, percorso della copia privata) per un yt-dlp."""
+    with _ck_lock:
+        with open(COOKIES, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    fd, path = tempfile.mkstemp(prefix=".yt-cookies-", suffix=".txt", dir=os.path.dirname(COOKIES) or ".")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    return text, path
+
+
+def cookie_checkin(original, path):
+    """Riunisce nel file principale i cookie che yt-dlp ha cambiato nella copia."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            after = f.read()
+    except OSError:
+        return
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    before = _ck_parse(original)
+    changed = {k: v for k, v in _ck_parse(after).items() if before.get(k) != v}
+    if not changed:
+        return
+    with _ck_lock:
+        try:
+            with open(COOKIES, encoding="utf-8", errors="replace") as f:
+                master = _ck_parse(f.read())
+        except OSError:
+            return  # file cancellato dall'admin nel frattempo: non lo si ricrea
+        master.update(changed)
+        tmp = COOKIES + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("# Netscape HTTP Cookie File\n" + "".join(v + "\n" for v in master.values()))
+        os.replace(tmp, COOKIES)
+        _ck_stats["merged"] += len(changed)
+        quiet = time.time() - _ck_stats["t"] < 600
+        _ck_stats["t"] = _ck_stats["t"] if quiet else time.time()
+    if not quiet:
+        print("cookie YouTube aggiornati da YouTube e salvati (%d valori finora)" % _ck_stats["merged"], flush=True)
+
+
+def run_yt(*args, net=None, cookies=None, **kw):
+    """Lancia yt-dlp (come subprocess.run). cookies=None: decide la sessione
+    (use_cookies); True/False: forza (per la verifica in admin)."""
+    want = use_cookies() if cookies is None else bool(cookies)
+    original = path = None
+    if want and os.path.isfile(COOKIES):
+        try:
+            original, path = cookie_checkout()
+        except OSError as e:
+            print("cookie non leggibili:", e, flush=True)
+    try:
+        return subprocess.run(yt_cmd(*args, net=net, cookie_file=path), **kw)
+    finally:
+        if path:
+            cookie_checkin(original, path)
+
+
 def search_yt(q):
     ck = ("s", q, use_cookies())
     hit = feed_cache.get(ck)
     if hit and time.time() - hit[0] < 600:
         return hit[1]
-    p = subprocess.run(
-        yt_cmd('--flat-playlist', '--print', '%(id)s\t%(title)s\t%(channel_id)s\t%(url)s', 'ytsearch16:' + q),
+    p = run_yt('--flat-playlist', '--print', '%(id)s\t%(title)s\t%(channel_id)s\t%(url)s', 'ytsearch16:' + q,
         text=True, capture_output=True,
     )
     rows = []
@@ -125,14 +213,12 @@ def flat_rows(url, limit=8, start=1):
     if hit and time.time() - hit[0] < 600:
         return hit[1]
     try:
-        p = subprocess.run(
-            yt_cmd(
+        p = run_yt(
                 "--flat-playlist",
                 "--playlist-start", str(start),
                 "--playlist-end", str(end),
                 "--print", "%(id)s\t%(title)s",
                 url,
-            ),
             text=True, capture_output=True, timeout=30,
         )
     except Exception as e:
@@ -175,9 +261,8 @@ def cookies_check():
         COOKIE_CHECK.update(t=time.time(), ok=None, msg="nessun file")
         return dict(COOKIE_CHECK)
     try:
-        p = subprocess.run(
-            yt_cmd("--flat-playlist", "--playlist-end", "1", "--print", "%(id)s",
-                   "https://www.youtube.com/playlist?list=WL", cookies=True),
+        p = run_yt("--flat-playlist", "--playlist-end", "1", "--print", "%(id)s",
+                   "https://www.youtube.com/playlist?list=WL", cookies=True,
             text=True, capture_output=True, timeout=60,
         )
     except Exception as e:
@@ -203,9 +288,8 @@ def video_meta(vid):
     hit = feed_cache.get(ck)
     if hit and time.time() - hit[0] < 1800:
         return hit[1]
-    p = subprocess.run(
-        yt_cmd("--print", "%(title)s\t%(channel)s", "--no-playlist",
-               "https://www.youtube.com/watch?v=" + vid),
+    p = run_yt("--print", "%(title)s\t%(channel)s", "--no-playlist",
+               "https://www.youtube.com/watch?v=" + vid,
         text=True, capture_output=True,
     )
     title = chan = ""
@@ -321,8 +405,7 @@ class StreamError(RuntimeError):
 def stream_urls(page_url, fmt, net=None):
     """URL diretti degli stream (video e, se separato, audio) per il formato
     yt-dlp `fmt`. Solleva StreamError."""
-    p = subprocess.run(
-        yt_cmd("-g", "--no-playlist", "--user-agent", UA, "-f", fmt, page_url, net=net),
+    p = run_yt("-g", "--no-playlist", "--user-agent", UA, "-f", fmt, page_url, net=net,
         text=True, capture_output=True,
     )
     if p.returncode != 0:
@@ -342,8 +425,7 @@ def stream_urls(page_url, fmt, net=None):
 def video_info(page_url):
     """{"duration": secondi (0 se ignota), "is_live": bool, "title": str},
     oppure None se yt-dlp non risponde."""
-    p = subprocess.run(
-        yt_cmd("--print", "%(duration)s\t%(is_live)s\t%(live_status)s\t%(title)s", "--no-playlist", page_url),
+    p = run_yt("--print", "%(duration)s\t%(is_live)s\t%(live_status)s\t%(title)s", "--no-playlist", page_url,
         text=True, capture_output=True,
     )
     for line in reversed(p.stdout.splitlines()):
@@ -365,8 +447,7 @@ def video_info(page_url):
 def channel_of(page_url):
     """Id del canale (UC...) di un video, o ""."""
     try:
-        p = subprocess.run(
-            yt_cmd("--print", "%(channel_id)s", "--no-playlist", page_url),
+        p = run_yt("--print", "%(channel_id)s", "--no-playlist", page_url,
             text=True, capture_output=True, timeout=20,
         )
     except Exception as e:

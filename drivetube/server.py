@@ -55,6 +55,7 @@ from .access import (
 )
 from .tools import ytdlp_status, ytdlp_update
 from .youtube import (
+    run_yt,
     COOKIE_CHECK,
     account_sections,
     channel_videos,
@@ -439,11 +440,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 sec = 20
             def h264_urls():
-                p = subprocess.run(
-                    yt_cmd("--no-playlist", "--user-agent", UA,
+                p = run_yt("--no-playlist", "--user-agent", UA,
                            "-f", "bv*[vcodec^=avc1][height<=720]/bv*[vcodec^=avc1]",
                            "--print", "%(width)sx%(height)s %(fps)s fps %(vcodec)s formato %(format_id)s %(protocol)s",
-                           "--print", "urls", url),
+                           "--print", "urls", url,
                     text=True, capture_output=True, timeout=90,
                 )
                 lines = [x.strip() for x in p.stdout.splitlines() if x.strip()]
