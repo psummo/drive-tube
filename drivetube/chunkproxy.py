@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .config import UA
 from .context import _tls, print
 from .access import ACCESS
-from .netutil import QuietServer
+from .netutil import QuietServer, active_proxy, open_url
 
 
 # ================= scaricamento a pezzi da YouTube =================
@@ -55,24 +55,15 @@ def px_forbidden(urls):
     return False
 
 
-def _px_opener():
-    # il proxy http(s) scelto in admin vale anche per lo stream (socks no:
-    # urllib non lo gestisce)
-    proxy = (ACCESS.get("yt") or {}).get("proxy", "")
-    if proxy.startswith(("http://", "https://")):
-        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    return urllib.request.build_opener()
-
-
 def _px_open(e, a, b):
-    """Apre il pezzo a-b, con 3 tentativi; su 403 si ferma subito."""
-    req = urllib.request.Request(e["url"], headers={
-        "User-Agent": UA, "Referer": "https://www.youtube.com/",
-        "Range": "bytes=%d-%d" % (a, b)})
+    """Apre il pezzo a-b, con 3 tentativi; su 403 si ferma subito. Passa dallo
+    stesso proxy scelto in admin per yt-dlp (http, https o socks5): gli URL di
+    YouTube valgono solo per l'indirizzo che li ha chiesti."""
+    headers = {"User-Agent": UA, "Referer": "https://www.youtube.com/", "Range": "bytes=%d-%d" % (a, b)}
     err = None
     for i in range(3):
         try:
-            return _px_opener().open(req, timeout=20)
+            return open_url(e["url"], headers, 20, active_proxy((ACCESS.get("yt") or {}).get("proxy", "")))
         except urllib.error.HTTPError as x:
             if x.code == 403:
                 e["forbidden"] = True

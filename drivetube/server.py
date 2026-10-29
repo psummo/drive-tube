@@ -73,7 +73,7 @@ from .potoken import (
     pot_test,
     yt_diagnose,
 )
-from .netutil import QuietServer, client_gone
+from .netutil import proxy_alive, QuietServer, client_gone
 from .chunkproxy import start_chunk_proxy
 from .media import V_CAP, ffmpeg_alive
 from .player import (
@@ -816,7 +816,8 @@ class Handler(BaseHTTPRequestHandler):
             st = pot_status()
             n = ACCESS.get("yt") or {}
             st["net"] = {"label": yt_net_label(n), "client": n.get("client", ""),
-                         "ipv4": bool(n.get("ipv4")), "proxy": n.get("proxy", "")}
+                         "ipv4": bool(n.get("ipv4")), "proxy": n.get("proxy", ""),
+                         "proxy_ok": proxy_alive(n["proxy"]) if n.get("proxy") else None}
             self.json_out(st)
             return
         if path == "/admin/api/ytdlp":

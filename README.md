@@ -154,6 +154,37 @@ That message usually means YouTube distrusts the server's IP address (cloud prov
 
 Settings are stored in `~/.config/drive-tube/access.json`.
 
+## YouTube through your home connection (recommended)
+YouTube distrusts the IP addresses of cloud servers: that is where the "Sign in to confirm you're not a bot" checks, the quickly expiring cookies and the slowed-down streams come from. The most effective fix is to send only the requests to YouTube out of your home connection, which YouTube sees as an ordinary user, while drive-tube itself stays on the server.
+
+An always-on device at home (a Raspberry Pi, Home Assistant, a Mac or a Linux PC) opens an SSH tunnel to the server. The connection starts from home, so no router port has to be opened. On the server the tunnel appears as a SOCKS5 proxy on `127.0.0.1:1080`, reachable only from the server itself. yt-dlp and the stream download both use it: stream URLs only work from the address that requested them. If the tunnel drops (home offline, device off), drive-tube notices within 15 seconds and goes back to the server's own address on its own.
+
+**1. On the server, once.** Let SSH notice dead tunnels quickly, so that a tunnel can reconnect right after a home internet hiccup:
+```bash
+printf 'ClientAliveInterval 30\nClientAliveCountMax 3\n' | sudo tee /etc/ssh/sshd_config.d/drive-tube-tunnel.conf
+sudo systemctl reload ssh
+```
+The server's SSH port must be reachable from your home connection (on AWS: *Security group → Inbound rules*).
+
+**2. At home: create the key.** Copy [`tunnel/home-tunnel.sh`](tunnel/home-tunnel.sh) to the home device and run it once with your server:
+```bash
+SERVER=admin@yourname.duckdns.org sh home-tunnel.sh
+```
+It creates a key next to the script and prints one line to add to `~/.ssh/authorized_keys` on the server. The line is restricted: that key can only open the tunnel on `127.0.0.1:1080`, with no shell and no other ports.
+
+**3. At home: keep it running.** Run the same command again: it stays connected and reconnects by itself.
+- *Home Assistant OS*: install the **Advanced SSH & Web Terminal** add-on. In its terminal run `mkdir -p /share/drive-tube && curl -fsSL https://raw.githubusercontent.com/psummo/drive-tube/main/tunnel/home-tunnel.sh -o /share/drive-tube/home-tunnel.sh`, then do step 2 there (`SERVER=... sh /share/drive-tube/home-tunnel.sh`). Finally add to the add-on's configuration
+  ```yaml
+  init_commands:
+    - SERVER=admin@yourname.duckdns.org nohup sh /share/drive-tube/home-tunnel.sh > /share/drive-tube/tunnel.log 2>&1 &
+  ```
+  and restart the add-on. The tunnel uses a few MB of memory.
+- *Raspberry Pi OS or another Linux*: a systemd service, for example `/etc/systemd/system/drive-tube-tunnel.service` with `Environment=SERVER=admin@yourname.duckdns.org`, `ExecStart=/bin/sh /home/pi/home-tunnel.sh`, `Restart=always`, `User=pi`, then `sudo systemctl enable --now drive-tube-tunnel`.
+
+**4. In the admin page**, *Rete verso YouTube* section: set the proxy to `socks5://127.0.0.1:1080` and save. Next to it the page shows *proxy attivo* or *proxy NON raggiungibile*. **Trova una configurazione che funziona** now also checks that the stream downloads through the proxy.
+
+Videos then travel home → server → car, so each viewer uses some of the home upload bandwidth (about 1–3 Mbit/s at 720p). With a home connection, cookies are often no longer needed.
+
 ## HTTPS (optional)
 The app works over plain http; HTTPS protects access codes and the admin password on the network. The server enables it on a separate port (**8443**) when it finds a certificate in `~/yt-cert/fullchain.pem` and `~/yt-cert/privkey.pem`; port 8090 keeps working.
 
@@ -227,6 +258,7 @@ print(search_yt("lofi"))
 |---|---|
 | `yt_mjpeg.py` | Entry point and version number. |
 | `drivetube/` | The app: backend modules and, in `web/`, the frontend (see [Code layout](#code-layout)). |
+| `tunnel/home-tunnel.sh` | Tunnel from a device at home, so that YouTube sees your home connection (see [YouTube through your home connection](#youtube-through-your-home-connection-recommended)). |
 | `setup.sh` | One-script install (see [Easy setup](#easy-setup-one-script)). |
 | `README.md` | This guide. |
 | `LICENSE` | MIT license, with the passengers-only notice. |
@@ -237,6 +269,9 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.9
+- **YouTube through your home connection**: the stream download now works through a SOCKS5 proxy too (before, only http proxies), so an SSH tunnel from a device at home (`tunnel/home-tunnel.sh`, see [YouTube through your home connection](#youtube-through-your-home-connection-recommended)) makes all YouTube traffic leave from the home IP instead of the datacenter's. If the proxy stops answering, drive-tube goes back to the server's own address within 15 seconds and says so in the log; the admin page shows whether the proxy is up, and the network diagnosis tests the stream through it.
 
 ### 15.8
 - **Cookie check**: *Verifica i cookie* in the admin page tells whether YouTube still recognises the account behind the cookies (it reads "Watch later", which exists only for a signed-in user). New cookies are checked right after upload, and when the home page gets "The playlist does not exist" for the personal playlists the admin page shows *NON validi* and the log says so plainly. The admin page also explains how to export cookies so that YouTube does not rotate them away.

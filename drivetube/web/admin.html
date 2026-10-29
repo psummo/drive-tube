@@ -104,9 +104,14 @@ esporti dal browser che usi di solito, YouTube li sostituisce dopo poco e qui sm
 </div>
 <table id="netres" style="display:none"><thead><tr><th>Configurazione</th><th>Risultato</th><th></th></tr></thead><tbody></tbody></table>
 <div class="row">
-  <input id="netproxy" placeholder="proxy, es. socks5://casa.example:1080 (vuoto = nessuno)" size="44">
+  <input id="netproxy" placeholder="proxy, es. socks5://127.0.0.1:1080 (vuoto = nessuno)" size="44">
   <button id="netproxybtn">Salva proxy</button>
+  <span id="netpx"></span>
 </div>
+<small>Il modo piu' efficace contro i blocchi e' far uscire le richieste a YouTube dalla connessione di casa: un
+dispositivo sempre acceso a casa apre un tunnel SSH verso questo server (vedi il README, "YouTube through your home
+connection") e qui si mette <b>socks5://127.0.0.1:1080</b>. Lo usano yt-dlp e lo stream; se il tunnel cade si torna
+da soli all'indirizzo del server.</small>
 
 <h2>Segnalazioni</h2>
 <p><small>Inviate dal player con "Segnala un problema" (nel pannello delle impostazioni): stato della sessione, del
@@ -289,6 +294,8 @@ function loadNet(){
   return api('pot').then(function(j){
     var n = j.net || {};
     $('netcur').textContent = 'in uso: ' + (n.label || 'client predefiniti');
+    $('netpx').textContent = !n.proxy ? '' : n.proxy_ok ? 'proxy attivo: YouTube passa da li\'' : 'proxy NON raggiungibile: uso l\'IP del server';
+    $('netpx').className = n.proxy_ok ? 'ok' : 'ko';
     if (document.activeElement !== $('netproxy')) $('netproxy').value = n.proxy || '';
   });
 }
@@ -316,6 +323,7 @@ $('netdiag').onclick = function(){
 $('netreset').onclick = function(){ api('yt/net', {client: '', ipv4: false}).then(function(x){ done(x); loadNet(); }); };
 $('netproxybtn').onclick = function(){ api('yt/net', {proxy: $('netproxy').value.trim()}).then(function(x){ done(x); loadNet(); }); };
 loadNet();
+setInterval(loadNet, 30000);
 function loadReps(){
   api('reports').then(function(j){
     var tb = $('reps').querySelector('tbody');

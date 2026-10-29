@@ -11,6 +11,7 @@ from .config import UA, COOKIES, feed_cache
 from .context import in_session, print
 from .access import ACCESS, use_cookies
 from .tools import find_node, ytdlp_bin
+from .netutil import active_proxy
 
 
 # Cookie che identificano l'account Google: senza questi resta solo il "visitatore"
@@ -62,7 +63,9 @@ def yt_net(net=None):
         out.append("-4")
     if n.get("client"):
         out += ["--extractor-args", "youtube:player_client=" + n["client"]]
-    if n.get("proxy"):
+    # il proxy (per esempio il tunnel verso casa) si usa solo se e' vivo:
+    # se cade si torna da soli all'IP del server
+    if n.get("proxy") and active_proxy(n["proxy"]):
         out += ["--proxy", n["proxy"]]
     return out
 

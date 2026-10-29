@@ -13,6 +13,7 @@ from .config import UA
 from .context import _bprint
 from .access import ACCESS
 from .tools import NODE_MIN, find_node, node_env, node_install, tool_version
+from .netutil import active_proxy, open_url
 from .youtube import YT_VARIANTS, yt_cmd, yt_net_label
 
 
@@ -292,9 +293,10 @@ def stream_probe(net=None):
         urls = [x for x in p.stdout.splitlines() if x.startswith("http")]
         if not urls:
             return False, "nessun URL"
-        req = urllib.request.Request(urls[0], headers={"User-Agent": UA, "Range": "bytes=0-65535"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            r.read(1024)
+        proxy = active_proxy(((net if net is not None else ACCESS.get("yt")) or {}).get("proxy", ""))
+        r = open_url(urls[0], {"User-Agent": UA, "Range": "bytes=0-65535"}, 20, proxy)
+        r.read(1024)
+        r.close()
         return True, ""
     except urllib.error.HTTPError as e:
         return False, "HTTP %d" % e.code
