@@ -55,8 +55,10 @@ from .access import (
 )
 from .tools import ytdlp_status, ytdlp_update
 from .youtube import (
+    COOKIE_CHECK,
     account_sections,
     channel_videos,
+    cookies_check,
     cookies_youtube_only,
     related_of,
     search_yt,
@@ -808,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
             st = os.stat(COOKIES) if os.path.isfile(COOKIES) else None
             self.json_out({"present": bool(st), "size": st.st_size if st else 0,
                            "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode(),
-                           "feed": home_feed()})
+                           "feed": home_feed(), "check": dict(COOKIE_CHECK)})
             return
         if path == "/admin/api/pot":
             st = pot_status()
@@ -1016,6 +1018,11 @@ class Handler(BaseHTTPRequestHandler):
             _bprint("yt-dlp aggiornato a", v, flush=True)
             self.json_out({"ok": True, "version": v})
             return
+        if what == "cookies/check":
+            r = cookies_check()
+            self.json_out({"ok": True, "check": r,
+                           "msg": {True: "cookie validi: account riconosciuto", False: "cookie NON validi: riesportali"}.get(r["ok"], r["msg"])})
+            return
         if what == "cookies/mode":
             mode = data.get("mode")
             if mode not in ("off", "admin", "all"):
@@ -1132,6 +1139,8 @@ class Handler(BaseHTTPRequestHandler):
             for x in SESSIONS.values():
                 x.state["err"] = ""
         _bprint("admin: cookie YouTube caricati", flush=True)
+        COOKIE_CHECK.update(t=0, ok=None, msg="")
+        threading.Thread(target=cookies_check, daemon=True).start()  # verifica subito i nuovi cookie
         self.redirect("/admin")
 
     def log_message(self, *a):

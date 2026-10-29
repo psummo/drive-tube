@@ -1,6 +1,7 @@
 """Acquisizione dati da YouTube tramite yt-dlp: ricerca, canali, feed personale, suggeriti,
 informazioni su un video e URL degli stream. Non dipende da ffmpeg ne' dal player: si puo'
 usare da solo per altro."""
+import os
 import re
 import shutil
 import subprocess
@@ -75,9 +76,11 @@ def yt_net_label(n):
     return t
 
 
-def yt_cmd(*args, net=None):
+def yt_cmd(*args, net=None, cookies=None):
+    """Comando yt-dlp con rete e cookie scelti in admin. cookies=True/False
+    forza l'uso dei cookie (per la verifica), altrimenti decide la sessione."""
     cmd = [ytdlp_bin()]
-    if use_cookies():
+    if (use_cookies() if cookies is None else (cookies and os.path.isfile(COOKIES))):
         cmd += ["--cookies", COOKIES]
     cmd += yt_net(net)
     # yt-dlp attiva da solo solo Deno: se c'e' soltanto Node va abilitato,
@@ -145,7 +148,50 @@ def flat_rows(url, limit=8, start=1):
     if not rows:
         err = (p.stderr or "")[-200:]
         print("elenco vuoto:", err, flush=True)
+        # "Guarda piu' tardi" e "Mi piace" esistono solo per chi e' collegato:
+        # se YouTube dice che non esistono, i cookie non valgono piu'
+        if use_cookies() and re.search(r"list=(WL|LL)$", url) and "does not exist" in err:
+            cookies_invalid("YouTube non riconosce piu' l'account (playlist personali inesistenti)")
     return rows
+
+
+# ---- verifica dei cookie ----
+COOKIE_CHECK = {"t": 0, "ok": None, "msg": ""}
+
+
+def cookies_invalid(why):
+    if COOKIE_CHECK["ok"] is not False:
+        print("cookie YouTube NON piu' validi: %s. Riesportali (vedi pagina admin)." % why, flush=True)
+    COOKIE_CHECK.update(t=time.time(), ok=False, msg=why)
+
+
+def cookies_check():
+    """Prova a leggere "Guarda piu' tardi" con i cookie: esiste solo per un
+    utente collegato. Aggiorna e ritorna COOKIE_CHECK."""
+    if not os.path.isfile(COOKIES):
+        COOKIE_CHECK.update(t=time.time(), ok=None, msg="nessun file")
+        return dict(COOKIE_CHECK)
+    try:
+        p = subprocess.run(
+            yt_cmd("--flat-playlist", "--playlist-end", "1", "--print", "%(id)s",
+                   "https://www.youtube.com/playlist?list=WL", cookies=True),
+            text=True, capture_output=True, timeout=60,
+        )
+    except Exception as e:
+        COOKIE_CHECK.update(t=time.time(), ok=None, msg="verifica non riuscita: %s" % e)
+        return dict(COOKIE_CHECK)
+    err = p.stderr or ""
+    if p.returncode == 0 and "does not exist" not in err:
+        COOKIE_CHECK.update(t=time.time(), ok=True, msg="account riconosciuto")
+    elif "does not exist" in err:
+        cookies_invalid("YouTube non riconosce piu' l'account")
+    elif "Sign in to confirm" in err or "not a bot" in err:
+        COOKIE_CHECK.update(t=time.time(), ok=None, msg="YouTube chiede la verifica anti-bot: non si puo' dire")
+    else:
+        last = err.strip().splitlines()[-1][:160] if err.strip() else "errore sconosciuto"
+        COOKIE_CHECK.update(t=time.time(), ok=None, msg="verifica non riuscita: " + last)
+    print("verifica cookie YouTube:", COOKIE_CHECK["msg"], flush=True)
+    return dict(COOKIE_CHECK)
 
 
 def video_meta(vid):

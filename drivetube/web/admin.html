@@ -62,6 +62,10 @@ small{color:#999}
 <h2>Cookie YouTube (facoltativi)</h2>
 <small>Con i cookie del tuo account YouTube le richieste passano piu' facilmente e nella home compaiono iscrizioni, "guarda piu' tardi" e "mi piace". Chi li usa agisce con il tuo account.</small>
 <div class="row"><span id="ckstate" class="na">controllo...</span></div>
+<div class="row"><span id="ckcheck" class="na"></span> <button id="ckverify">Verifica i cookie</button></div>
+<small>Perche' durino: apri una finestra in incognito, accedi a YouTube, esporta i cookie (formato Netscape, per
+esempio con l'estensione "Get cookies.txt LOCALLY"), caricali qui e poi chiudi la finestra senza usarla piu'. Se li
+esporti dal browser che usi di solito, YouTube li sostituisce dopo poco e qui smettono di funzionare.</small>
 <div class="row">
   <span>Usa i cookie per:</span>
   <button data-ck="off">nessuno</button>
@@ -350,9 +354,19 @@ function loadCk(){
     document.querySelectorAll('[data-ck]').forEach(function(b){ b.className = b.getAttribute('data-ck') === j.mode ? 'go' : ''; });
     var show = j.present && j.mode !== 'off';
     $('feedrow').style.display = show ? '' : 'none';
+    var c = j.check || {};
+    var when = c.t ? ' (' + new Date(c.t * 1000).toLocaleTimeString() + ')' : '';
+    $('ckcheck').textContent = !j.present ? '' : c.ok === true ? 'validi: account riconosciuto' + when :
+      c.ok === false ? 'NON validi: ' + c.msg + when + '. Riesportali.' : (c.msg ? c.msg + when : 'non ancora verificati');
+    $('ckcheck').className = c.ok === true ? 'ok' : c.ok === false ? 'ko' : 'na';
+    $('ckverify').style.display = j.present ? '' : 'none';
     document.querySelectorAll('[data-feed]').forEach(function(b){ b.className = b.getAttribute('data-feed') === j.feed ? 'go' : ''; });
   });
 }
+$('ckverify').onclick = function(){
+  $('ckcheck').textContent = 'verifico...';
+  api('cookies/check', {}).then(function(r){ done(r); loadCk(); });
+};
 document.querySelectorAll('[data-ck]').forEach(function(b){
   b.onclick = function(){ api('cookies/mode', {mode: b.getAttribute('data-ck')}).then(function(r){ done(r); loadCk(); }); };
 });
