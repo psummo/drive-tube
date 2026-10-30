@@ -2,11 +2,12 @@
 (state, lock, cur()), i thread avviati con sthread() la ereditano, e il log toglie i dati
 personali e porta l'etichetta della sessione."""
 import builtins
+import os
 import re
 import threading
 import time
 from collections import deque
-from .config import DEFAULTS, PORT
+from .config import DEFAULTS, PORT, TMP_DIR
 
 
 def in_session(fn):
@@ -104,7 +105,7 @@ class Session:
         self.url = ""
         self.cfg = dict(DEFAULTS)
         self.created = self.seen = time.time()
-        base = "/tmp/yt_%d_%s" % (PORT, sid[:16])
+        base = os.path.join(TMP_DIR, "yt_%d_%s" % (PORT, sid[:16]))
         self.fifo_v = base + "_v.fifo"
         self.fifo_a = base + "_a.fifo"
         self.state = new_state()

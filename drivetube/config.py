@@ -67,3 +67,8 @@ YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
 
 
 YTDLP_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+
+
+# Android con Termux: niente /tmp scrivibile, Node da "pkg install nodejs"
+IS_TERMUX = bool(os.environ.get("TERMUX_VERSION")) or os.environ.get("PREFIX", "").startswith("/data/data/com.termux")
+TMP_DIR = os.environ.get("TMPDIR") or ("/data/data/com.termux/files/usr/tmp" if IS_TERMUX else "/tmp")

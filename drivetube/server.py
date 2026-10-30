@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
-from .config import COOKIES, HEADERS, PORT, SETTINGS_UI, UA, VERSION, feed_cache
+from .config import COOKIES, HEADERS, IS_TERMUX, PORT, SETTINGS_UI, UA, VERSION, feed_cache
 from .context import (
     MAX_PER_CODE,
     OWNER,
@@ -74,7 +74,7 @@ from .potoken import (
     pot_test,
     yt_diagnose,
 )
-from .netutil import proxy_alive, QuietServer, client_gone
+from .netutil import is_hotspot, local_ipv4, proxy_alive, QuietServer, client_gone
 from .chunkproxy import start_chunk_proxy
 from .media import V_CAP, ffmpeg_alive
 from .player import (
@@ -801,7 +801,9 @@ class Handler(BaseHTTPRequestHandler):
                 })
             with ACCESS_LOCK:
                 codes = [dict(c) for c in ACCESS["codes"]]
-            self.json_out({"ok": True, "version": VERSION, "codes": codes, "sessions": rows})
+            addrs = [{"if": n, "ip": ip, "hotspot": is_hotspot(n, ip)} for n, ip in local_ipv4()]
+            self.json_out({"ok": True, "version": VERSION, "codes": codes, "sessions": rows,
+                           "addrs": addrs, "port": PORT, "termux": IS_TERMUX})
             return
         if path == "/admin/api/update/check":
             self.json_out(check_update())
@@ -1172,6 +1174,9 @@ def serve_https():
 
 def main():
     _bprint("http://0.0.0.0:%d/" % PORT, flush=True)
+    for name, ip in local_ipv4():
+        _bprint("  da un altro dispositivo: http://%s:%d/  (%s%s)" % (
+            ip, PORT, name, ", hotspot" if is_hotspot(name, ip) else ""), flush=True)
     print("codici attivi: %d, admin %s" % (
         sum(1 for c in ACCESS["codes"] if c.get("enabled", True)),
         "attivo" if ADMIN_PASS else "spento (manca YT_ADMIN)"), flush=True)

@@ -166,3 +166,39 @@ def open_url(url, headers=None, timeout=20, proxy=""):
             raise urllib.error.HTTPError(url, r.status, r.reason, r.headers, io.BytesIO(body))
         return r
     raise OSError("troppi redirect")
+
+
+# ---- indirizzi di questa macchina (per sapere cosa aprire dalla Tesla) ----
+def local_ipv4():
+    """[(interfaccia, ip)] degli indirizzi IPv4 di questa macchina, escluso 127.x."""
+    out = []
+    try:
+        import fcntl
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for _, name in socket.if_nameindex():
+                try:
+                    res = fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", name[:15].encode()))  # SIOCGIFADDR
+                except OSError:
+                    continue
+                ip = socket.inet_ntoa(res[20:24])
+                if not ip.startswith("127."):
+                    out.append((name, ip))
+        finally:
+            s.close()
+    except Exception:
+        pass
+    if not out:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            out.append(("?", s.getsockname()[0]))
+            s.close()
+        except OSError:
+            pass
+    return out
+
+
+def is_hotspot(name, ip):
+    """Indovina se l'interfaccia e' l'hotspot del telefono (nomi usati da Android)."""
+    return name.startswith(("ap", "swlan", "softap", "wlan1", "rndis", "wigig")) or ip.startswith("192.168.43.")

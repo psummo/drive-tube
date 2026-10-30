@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.error
-from .config import YTDLP_API, YTDLP_LOCAL, YTDLP_URL, feed_cache
+from .config import YTDLP_API, YTDLP_LOCAL, YTDLP_URL, feed_cache, IS_TERMUX
 
 
 _ytdlp_latest = {"t": 0, "v": "", "err": ""}
@@ -101,6 +101,9 @@ def node_env(node):
 
 def node_install(log=lambda m: None):
     """Scarica l'ultimo Node LTS ufficiale in NODE_LOCAL. Ritorna il percorso di node."""
+    if IS_TERMUX:
+        # i binari ufficiali sono per Linux normale e su Android non partono
+        raise RuntimeError("su Android installa Node da Termux: pkg install nodejs")
     import platform
     import tarfile
     arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(
@@ -194,6 +197,16 @@ def ytdlp_status(force=False):
 
 
 def ytdlp_update():
+    if IS_TERMUX:
+        # su Android l'eseguibile per Linux non parte: si aggiorna il pacchetto
+        # Python ("default" include yt-dlp-ejs, che risolve i controlli JS di YouTube)
+        p = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"],
+                           capture_output=True, text=True, timeout=600)
+        if p.returncode != 0:
+            raise RuntimeError("pip non riuscito: " + (p.stderr or p.stdout).strip()[-300:])
+        feed_cache.clear()
+        _ytdlp_latest["t"] = 0
+        return tool_version([ytdlp_bin(), "--version"])
     os.makedirs(os.path.dirname(YTDLP_LOCAL), exist_ok=True)
     tmp = YTDLP_LOCAL + ".new"
     req = urllib.request.Request(YTDLP_URL, headers={"User-Agent": "drive-tube"})

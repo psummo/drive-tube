@@ -58,6 +58,7 @@ small{color:#999}
   <button id="ytdbtn" disabled>Aggiorna yt-dlp</button>
 </div>
 <div class="row"><small id="tools"></small></div>
+<div class="row"><small id="addrs"></small></div>
 
 <h2>Cookie YouTube (facoltativi)</h2>
 <small>Con i cookie del tuo account YouTube le richieste passano piu' facilmente e nella home compaiono iscrizioni, "guarda piu' tardi" e "mi piace". Chi li usa agisce con il tuo account.</small>
@@ -142,6 +143,12 @@ function ago(s){
   return (s / 3600).toFixed(1) + ' ore fa';
 }
 function render(st){
+  if (st.addrs) {
+    $('addrs').innerHTML = 'Indirizzi di questo server: ' + (st.addrs.map(function(a){
+      var u = 'http://' + a.ip + ':' + st.port + '/';
+      return (a.hotspot ? '<b>' : '') + esc(u) + ' (' + esc(a.if) + (a.hotspot ? ', hotspot: da aprire sulla Tesla' : '') + ')' + (a.hotspot ? '</b>' : '');
+    }).join(' &middot; ') || 'nessuno trovato');
+  }
   var cb = $('codes').querySelector('tbody');
   cb.innerHTML = '';
   if (!st.codes.length) cb.innerHTML = '<tr><td colspan="4" class="na">nessun codice: aggiungine uno qui sotto</td></tr>';

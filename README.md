@@ -31,6 +31,21 @@ bash setup.sh
 ```
 Then open `http://YOUR-SERVER:8090/admin` (open the port in the firewall) and create your access codes. Running it again updates everything. Prefer to do it by hand? Follow the steps below.
 
+## On an Android phone (Termux)
+drive-tube can run on the phone itself: the Tesla joins the phone's hotspot and its browser opens the phone's address on that network. The phone reaches YouTube through the mobile network, whose addresses are shared by many real users, so YouTube is far less suspicious of them than of a cloud server, and no server or home connection is needed. Video travels YouTube → phone → car on the phone's data, as it would anyway with the hotspot.
+
+It runs in **Termux** (install it from F-Droid, not from the Play Store, whose version is outdated):
+```bash
+curl -fsSL https://raw.githubusercontent.com/psummo/drive-tube/main/termux/setup.sh -o setup.sh
+bash setup.sh
+```
+The script installs Python, ffmpeg, Node and yt-dlp (`yt-dlp[default]`, which includes the JavaScript challenge solver), downloads drive-tube, asks for the admin password and prepares automatic start. Then:
+- start it with `bash ~/drive-tube/termux/start.sh` (stop: `termux/stop.sh`). It keeps the phone awake while running, restarts drive-tube if it stops and prints the addresses; open the one marked **HOTSPOT** in the Tesla browser (for example `http://192.168.43.1:8090/`). `localhost` would not work: in the car it means the car itself. The admin page shows the same addresses.
+- set Termux's battery usage to *Unrestricted* in Android's settings, otherwise Android may close it in the background;
+- optional: the **Termux:Boot** app starts drive-tube when the phone boots, and **Termux:Widget** adds a home-screen button.
+
+On some phones the hotspot address changes from time to time: check it in the startup message or in the admin page. *Aggiorna yt-dlp* in the admin page uses `pip` on Termux, and the drive-tube update works as on a server.
+
 ## Installation
 Install the dependencies with your distribution's package manager:
 
@@ -258,6 +273,7 @@ print(search_yt("lofi"))
 |---|---|
 | `yt_mjpeg.py` | Entry point and version number. |
 | `drivetube/` | The app: backend modules and, in `web/`, the frontend (see [Code layout](#code-layout)). |
+| `termux/` | Install, start and stop scripts for running drive-tube on an Android phone with Termux. |
 | `tunnel/home-tunnel.sh` | Tunnel from a device at home, so that YouTube sees your home connection (see [YouTube through your home connection](#youtube-through-your-home-connection-recommended)). |
 | `setup.sh` | One-script install (see [Easy setup](#easy-setup-one-script)). |
 | `README.md` | This guide. |
@@ -269,6 +285,9 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.11
+- **Android (Termux)**: drive-tube runs on a phone, with the Tesla on the phone's hotspot (see [On an Android phone](#on-an-android-phone-termux)). `termux/setup.sh` installs everything and sets up automatic start, `termux/start.sh` keeps the phone awake, restarts drive-tube if it stops and prints the address to open in the car. The ffmpeg exchange files go to the system's temporary folder instead of `/tmp`, which Android does not have; on Termux the yt-dlp update uses `pip` and Node comes from Termux's packages. The server prints its addresses at start, with the hotspot one marked, and the admin page lists them too.
 
 ### 15.10
 - **Cookies no longer overwritten by parallel yt-dlp runs**: yt-dlp rewrites its cookie file when it finishes, with the values YouTube has rotated. drive-tube runs several yt-dlp at once (search, the personal feed lists, video info), and each one wrote back the cookies it had read at the start, so a fresh rotation was often replaced by an older value; Google may close a session when a rotated-out cookie is used again. Now every yt-dlp works on its own private copy and only the cookies it actually changed are merged back into `~/cookies.txt`, one at a time under a lock (atomic write, mode 600). In a simulation with 6 parallel runs per home page, the file used to miss the latest rotation in most rounds; now only when two runs rotate at the same moment.
