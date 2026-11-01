@@ -289,6 +289,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.15
+- Browser cookies run in the background and the admin page shows each step as it happens (Chromium started, YouTube opened, consent accepted, video opened, cookies saved, video test) with the result next to the button. Reloading the page does not stop it, and a second click while it runs does not start another one.
+
 ### 15.14
 - Browser cookies: when Chromium cannot start, the admin page now shows Playwright's full reason instead of only its first line, and for missing system libraries it gives the exact one-time command to run over SSH.
 

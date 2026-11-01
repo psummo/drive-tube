@@ -7,6 +7,7 @@ import glob
 import json
 import os
 import subprocess
+import threading
 import time
 
 from .config import COOKIES, UA
@@ -83,6 +84,40 @@ def _netscape(cookies):
     return "\n".join(lines) + "\n"
 
 
+# lavoro in corso, letto dalla pagina admin mentre va avanti
+JOB = {"running": False, "steps": [], "result": None, "error": "", "t": 0.0}
+_job_lock = threading.Lock()
+
+
+def _step(text):
+    JOB["steps"].append("%3.0f s  %s" % (time.time() - JOB["t"], text))
+    print("browser cookie:", text, flush=True)
+
+
+def browser_cookies_start():
+    """Avvia browser_cookies() in background. False se ce n'e' gia' uno in corso."""
+    with _job_lock:
+        if JOB["running"]:
+            return False
+        JOB.update(running=True, steps=[], result=None, error="", t=time.time())
+
+    def run():
+        try:
+            JOB["result"] = browser_cookies()
+        except Exception as e:
+            JOB["error"] = str(e)
+            _step("ERRORE: " + str(e)[:300])
+        finally:
+            JOB["running"] = False
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
+def browser_job():
+    return {"running": JOB["running"], "steps": list(JOB["steps"]), "result": JOB["result"],
+            "error": JOB["error"], "age": time.time() - JOB["t"] if JOB["t"] else None}
+
+
 def browser_cookies():
     """Apre YouTube nel browser del server, salva i cookie ottenuti in ~/cookies.txt
     (solo youtube.com, senza account) e prova un video con quei cookie."""
@@ -92,13 +127,32 @@ def browser_cookies():
     node, _ = find_node()
     env = dict(node_env(node), DT_BROWSER_DIR=BROWSER_DIR, DT_UA=UA)
     t0 = time.time()
-    p = subprocess.run([node, SCRIPT], capture_output=True, text=True, timeout=180, env=env)
+    if not JOB["t"]:
+        JOB["t"] = t0
+    p = subprocess.Popen([node, SCRIPT], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    errlines = []
+
+    def read_err():
+        for line in p.stderr:
+            line = line.rstrip()
+            if line.startswith("PASSO: "):
+                _step(line[7:])
+            elif line:
+                errlines.append(line)
+    rt = threading.Thread(target=read_err, daemon=True)
+    rt.start()
     try:
-        res = json.loads(p.stdout or "{}")
+        stdout, _ = p.communicate(timeout=180)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        raise RuntimeError("il browser non ha finito entro 3 minuti (YouTube non risponde?)")
+    rt.join(timeout=5)
+    try:
+        res = json.loads(stdout or "{}")
     except ValueError:
-        res = {"ok": False, "error": (p.stderr or p.stdout or "nessuna risposta").strip()[-300:]}
+        res = {"ok": False, "error": ("\n".join(errlines) or stdout or "nessuna risposta").strip()[-300:]}
     if not res.get("ok"):
-        err = res.get("error") or (p.stderr or "").strip()[-300:]
+        err = res.get("error") or "\n".join(errlines).strip()[-300:]
         if any(k in err for k in ("error while loading shared libraries", "missing dependencies",
                                   "Missing libraries", "install-deps", "cannot open shared object")):
             err = ("a Chromium mancano librerie di sistema. Via SSH lancia una volta: " + st["deps_cmd"] +
@@ -108,6 +162,7 @@ def browser_cookies():
     if not kept:
         raise RuntimeError("YouTube non ha dato cookie (passi: %s)" % ", ".join(res.get("steps", [])))
     cookies_write(text)
+    _step("salvati %d cookie, ora provo un video con yt-dlp" % kept)
     COOKIE_CHECK.update(t=time.time(), ok=None, msg="cookie da visitatore presi dal browser")
     names = sorted({line.split("\t")[5] for line in text.splitlines() if line.count("\t") == 6})
     print("cookie YouTube presi dal browser: %d (%s) in %.0f s" % (kept, ", ".join(names), time.time() - t0), flush=True)
@@ -121,6 +176,6 @@ def browser_cookies():
         verdict = "prova video: YouTube chiede ancora la verifica anti-bot"
     else:
         verdict = "prova video non riuscita: " + (err.strip().splitlines()[-1][:160] if err.strip() else "errore")
-    print(verdict, flush=True)
+    _step(verdict)
     return {"ok": True, "kept": kept, "names": names, "steps": res.get("steps", []), "verdict": verdict,
             "video_ok": t.returncode == 0}

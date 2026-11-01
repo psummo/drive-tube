@@ -93,7 +93,7 @@ from .player import (
 )
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
-from .browser import browser_cookies, browser_install, browser_status
+from .browser import browser_cookies_start, browser_install, browser_job, browser_status
 from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -835,6 +835,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/api/ytdlp":
             self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
             return
+        if path == "/admin/api/browser":
+            self.json_out(browser_job())
+            return
         if path == "/admin/api/reports":
             self.json_out({"reports": list_reports()})
             return
@@ -1041,13 +1044,9 @@ class Handler(BaseHTTPRequestHandler):
             self.json_out({"ok": True, "msg": "browser installato", "browser": st})
             return
         if what == "browser/cookies":
-            try:
-                r = browser_cookies()
-            except Exception as e:
-                _bprint("cookie dal browser non riusciti:", e, flush=True)
-                self.json_out({"ok": False, "error": str(e)})
-                return
-            self.json_out(dict(r, msg="%d cookie presi dal browser. %s" % (r["kept"], r["verdict"])))
+            started = browser_cookies_start()
+            self.json_out({"ok": True, "started": started,
+                           "msg": "browser avviato" if started else "c'e' gia' una prova in corso"})
             return
         if what == "cookies/check":
             r = cookies_check()

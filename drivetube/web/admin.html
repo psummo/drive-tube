@@ -73,6 +73,7 @@ small{color:#999}
 ottiene (da visitatore, senza account), poi prova subito un video con quei cookie. Al primo uso puo' servire, via SSH,
 un comando per le librerie di sistema: se serve, lo trovi qui sotto.</small>
 <div class="row"><small id="brdeps"></small></div>
+<pre id="brlog" style="display:none;white-space:pre-wrap;background:#000;color:#ddd;padding:10px;border-radius:8px;font-size:13px"></pre>
 <small>Perche' durino: apri una finestra in incognito, accedi a YouTube, esporta i cookie (formato Netscape, per
 esempio con l'estensione "Get cookies.txt LOCALLY"), caricali qui e poi chiudi la finestra senza usarla piu'. Se li
 esporti dal browser che usi di solito, YouTube li sostituisce dopo poco e qui smettono di funzionare.</small>
@@ -397,11 +398,28 @@ $('brinstall').onclick = function(){
   $('brinstall').disabled = true;
   api('browser/install', {}).then(function(r){ $('brinstall').disabled = false; done(r); loadCk(); });
 };
+var brTimer = null;
+function pollBr(){
+  api('browser').then(function(j){
+    if (!j || (!j.running && !j.steps.length)) return;
+    var box = $('brlog');
+    box.style.display = '';
+    var lines = j.steps.slice();
+    if (j.running) lines.push('... in corso');
+    else if (j.result) lines.push('FATTO: ' + j.result.kept + ' cookie salvati. ' + j.result.verdict);
+    else if (j.error) lines.push('NON RIUSCITO: ' + j.error);
+    box.textContent = lines.join(String.fromCharCode(10));
+    box.style.color = j.running ? '#ddd' : (j.result && j.result.video_ok ? '#8f8' : (j.error ? '#f88' : '#fc6'));
+    $('brcookies').disabled = j.running;
+    if (j.running) { brTimer = setTimeout(pollBr, 1500); } else { brTimer = null; loadCk(); }
+  });
+}
 $('brcookies').onclick = function(){
-  $('brstate').textContent = 'apro YouTube nel browser del server e provo un video (circa 30 secondi)...';
   $('brcookies').disabled = true;
-  api('browser/cookies', {}).then(function(r){ $('brcookies').disabled = false; done(r); loadCk(); });
+  $('brlog').style.display = ''; $('brlog').textContent = 'avvio...'; $('brlog').style.color = '#ddd';
+  api('browser/cookies', {}).then(function(r){ if (brTimer) clearTimeout(brTimer); pollBr(); });
 };
+pollBr();
 $('ckverify').onclick = function(){
   $('ckcheck').textContent = 'verifico...';
   api('cookies/check', {}).then(function(r){ done(r); loadCk(); });
