@@ -33,6 +33,8 @@ from .youtube import (
     video_info,
 )
 from .chunkproxy import px_forbidden, px_url
+from . import live, twitch
+from .sources import resolve
 from .media import (
     ensure_fifo,
     ffmpeg_cmd,
@@ -45,12 +47,36 @@ from .media import (
 )
 
 
-def set_page(url):
+def kind():
+    return (cur().src or {}).get("kind", "yt")
+
+
+def yt_here():
+    """Id del video YouTube in riproduzione, o ""."""
+    s = cur()
+    return s.src.get("watch", "") if kind() == "yt" and s.url else ""
+
+
+def open_watch(watch):
+    """Apre la sorgente indicata da /watch?v= (YouTube, canale TV, Twitch).
+    False se non la si riconosce."""
+    r = resolve(watch)
+    if not r:
+        return False
+    set_page(r[0], r[1])
+    return True
+
+
+def set_page(url, src=None):
+    if src is None:
+        src = resolve(url.split("v=")[-1][:11]) if "v=" in url else None
+        src = src[1] if src else {"kind": "yt", "watch": ""}
     cur().url = url
+    cur().src = src
     state['duration'] = 0
     state['seek_base'] = 0.0
-    state['is_live'] = False
-    state['title'] = ""
+    state['is_live'] = bool(src.get("live"))
+    state['title'] = src.get("title", "")
     sthread(fetch_duration).start()
     new_session(0)
 
@@ -125,6 +151,29 @@ def janitor():
 
 
 def next_of_current():
+    """Cosa proporre dopo: [{"href", "title", "thumb"}]."""
+    src = cur().src or {}
+    if src.get("kind") == "m3u":
+        # gli altri canali della stessa lista, a partire da quello dopo
+        rows, _ = live.channels(src["list"], wait=False)
+        i = next((n for n, r in enumerate(rows) if r["key"] == src["row"]["key"]), -1)
+        geo = src["row"].get("geo")
+        order = rows[i + 1:] + rows[:max(i, 0)]
+        out = [r for r in order if r.get("geo") == geo] or order
+        return [{"href": "/watch?v=tv.%s.%s" % (src["list"], r["key"]), "title": r["name"], "thumb": r["logo"]}
+                for r in out[:12]]
+    if src.get("kind") == "twitch":
+        name = src.get("channel")
+        if not name:
+            return []
+        return [{"href": "/watch?v=twv." + vid, "title": title, "thumb": ""}
+                for vid, title, dur in twitch.vods(name)[:8]]
+    return [{"href": "/watch?v=" + x["id"], "title": x["title"],
+             "thumb": "https://i.ytimg.com/vi/%s/hqdefault.jpg" % x["id"], "id": x["id"]}
+            for x in _yt_next()]
+
+
+def _yt_next():
     url = cur().url
     if not url or "v=" not in url:
         return []
@@ -148,6 +197,8 @@ def fetch_duration():
     url = cur().url
     if (state["duration"] or state.get("is_live")) and state.get("title") or not url:
         return
+    if kind() == "m3u":
+        return  # canale TV: sempre in diretta, nome dalla lista
     info = video_info(url)
     if cur().url != url or info is None:
         return  # nel frattempo e' stato aperto un altro video, o yt-dlp non ha risposto
@@ -185,6 +236,21 @@ def ytdlp_urls(net=None, quiet=False):
     # net: rete/client diversi da quelli salvati (ripiego dopo un 403);
     # quiet: in caso di errore non tocca state["err"] (il client lo leggerebbe
     # e, per esempio, passerebbe a MJPEG mentre si stanno provando altri client)
+    k = kind()
+    if k == "m3u":
+        try:
+            v, a = live.stream_of(cur().src["row"], h264_height() if state["vmode"] == "h264" else 720,
+                                  state["vmode"] == "h264")
+            return [v, a] if a else [v]
+        except live.LiveError as e:
+            state["err"] = str(e)
+            raise RuntimeError(state["err"])
+    if k == "twitch":
+        try:
+            return twitch.stream_urls(cur().url, h264_height() if state["vmode"] == "h264" else 720)
+        except StreamError as e:
+            state["err"] = ("Twitch: " + str(e)) if e.kind == "none" else "Twitch: stream non disponibile (%s)" % e
+            raise RuntimeError(state["err"])
     try:
         return stream_urls(cur().url, ytdlp_format(), net)
     except StreamError as e:
@@ -230,12 +296,21 @@ def spawn_ff(gen, pos, vsrc, asrc, askip=0):
     state["v_made"] = 0
     state["a_read"] = 0
     state["urls"] = (vsrc, asrc)
-    pv = px_url(vsrc)
-    pa = pv if asrc == vsrc else px_url(asrc)
+    src = cur().src or {}
+    if kind() == "yt":
+        # solo gli stream di YouTube passano dal proxy a pezzi (taglia le
+        # connessioni lunghe); dirette HLS e Twitch vanno a ffmpeg cosi' come sono
+        pv = px_url(vsrc)
+        pa = pv if asrc == vsrc else px_url(asrc)
+        opts = {}
+    else:
+        pv, pa = vsrc, asrc
+        ua, hdr = live.ff_headers(src["row"]) if src.get("row") else (None, "")
+        opts = {"generic": True, "live": bool(state.get("is_live")), "ua": ua, "headers": hdr}
     state["px_urls"] = (pv, pa)
     tail = deque(maxlen=12)
     p = subprocess.Popen(
-        ffmpeg_cmd(pv, pa, pos),
+        ffmpeg_cmd(pv, pa, pos, **opts),
         stdin=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
@@ -287,7 +362,12 @@ def watch_ff(gen, p, pos, threads, tail):
             state["fails"] = state.get("fails", 0) + 1
         fails = state["fails"]
         if fails >= 6:
-            state["err"] = "403 dopo %d tentativi: YouTube interrompe lo stream" % fails
+            if kind() == "yt":
+                state["err"] = "403 dopo %d tentativi: YouTube interrompe lo stream" % fails
+            elif any("403" in line for line in tail):
+                state["err"] = "Il canale rifiuta la connessione (403): probabilmente si vede solo dall'Italia"
+            else:
+                state["err"] = "Lo stream si interrompe di continuo (%d tentativi)" % fails
             print(state["err"], flush=True)
             return
         urls = state.get("urls")
@@ -299,7 +379,7 @@ def watch_ff(gen, p, pos, threads, tail):
         # 403: lo stesso URL verrebbe rifiutato di nuovo, se ne prendono di
         # nuovi subito; dal secondo 403 di fila si prova un altro client
         cands = [(cur_net, False)]
-        if forbidden and fails >= 2:
+        if forbidden and fails >= 2 and kind() == "yt":
             cands = [(net_with_client(c), True) for c in FALLBACK_CLIENTS[fails - 2:]]
         lst = None
         for net, alt in cands:

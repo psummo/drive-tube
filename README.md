@@ -6,7 +6,7 @@
 >
 > drive-tube is an independent open-source project, provided "as is" without warranty of any kind (see [LICENSE](LICENSE)). It is not affiliated with, endorsed by or connected to Tesla, Google or YouTube. You are responsible for respecting YouTube's terms of service and the rights of content owners.
 
-A lightweight YouTube player for in-car browsers (built for the Tesla browser), so that passengers can keep watching while the car is moving: those browsers block `<video>` and `<audio>` while driving.
+A lightweight YouTube player for in-car browsers (built for the Tesla browser), so that passengers can keep watching while the car is moving: those browsers block `<video>` and `<audio>` while driving. Besides YouTube it plays **live TV channels from M3U playlists** (free-to-air Italian channels by default) and **Twitch** streams and videos.
 
 drive-tube is a small Python server with no dependencies beyond the standard library (see [Code layout](#code-layout)). `yt-dlp` finds the YouTube stream and `ffmpeg` prepares it for the browser, which plays it on a canvas and through the Web Audio API, with no `<video>` or `<audio>` tags. Audio is the master clock and the video follows it.
 
@@ -226,6 +226,19 @@ You need a domain name pointing to the machine (a free [DuckDNS](https://www.duc
 
 Port and paths can be changed with `YT_HTTPS_PORT`, `YT_CERT` and `YT_KEY`.
 
+## Home: live TV, YouTube, Twitch
+After login, `/home` shows three tiles, plus *Riprendi* (resume) for whatever was playing. Each section has its own page, and a bar at the top of every page switches between them:
+- **`/live`, TV in diretta**: channels from one or more M3U playlists, with their logos and a search box. The player's home button goes back to the channel list, and tapping the video shows the next channels of the same list, for quick zapping.
+- **`/youtube`**: the YouTube home as before (search, recent searches, suggestions, subscriptions). Old `/home?q=...` links still work.
+- **`/twitch`**: add the channels you follow (name or `twitch.tv/...` link); they are stored in a cookie of your browser. The page shows which are live, with Twitch's preview picture; a live channel opens straight in the player, an offline one shows its recent saved videos (VODs). Streams and videos come through yt-dlp.
+
+### Live TV playlists
+The playlists are managed in the admin page, section *TV in diretta (liste M3U)*: add any public M3U/M3U8 playlist by URL, remove it, reload it, or go back to the default. The default is the Italian list of the [Free-TV/IPTV](https://github.com/Free-TV/IPTV) project (`playlists/playlist_italy.m3u8`), which collects only free, publicly available streams: Rai, Mediaset, La7, TV8, Nove, Rai News 24 and many local channels. Lists are downloaded by the server, kept in memory and refreshed every 6 hours; `#EXTVLCOPT` user agent/referrer lines and Kodi-style `url|Referer=...` headers are honoured. Only `http`/`https` streams are played.
+
+Channels marked **Ⓖ** in the list are geo-blocked: they only play from an Italian IP address. The live page lists them separately. From a server abroad (for example AWS Stockholm) they usually fail with *probabilmente trasmesso solo in Italia*; the channels without Ⓖ (for example the Rai 1/2/3 streams of the default list) work from anywhere. To watch the Ⓖ channels, run drive-tube on a machine in Italy (an EC2 in the Milan region `eu-south-1`, a home server, or an Android phone with Termux).
+
+How it plays: for an HLS playlist with several qualities the server picks the highest up to 720p (H.264 when the browser decodes it), with the separate audio track if there is one, and hands the URLs straight to ffmpeg (no yt-dlp, no chunk proxy). A live stream has no seek bar; if the connection drops, ffmpeg restarts from the current moment and the picture carries on. Netflix, Prime Video and similar services are not supported: their streams are DRM-protected.
+
 ## Player settings
 The gear icon (top left) opens the settings: video format (H.264 or MJPEG), resolution, frame rate and JPEG quality (these two for MJPEG only), audio quality, audio buffer and the diagnostics panel. In H.264 the resolution is capped at 720p. **Salva e applica** (save and apply) stores them in **browser cookies**: there is no configuration file on the server. Without cookies the defaults in the code apply (`SETTINGS` in `drivetube/config.py`). Recent searches are stored in a cookie too.
 
@@ -255,8 +268,11 @@ Available after login:
 |---|---|
 | `drivetube/youtube.py` | **Getting data from YouTube** through yt-dlp: search, channels, personal feed, suggestions, a video's information and its stream URLs. It knows nothing about ffmpeg or the player, so it can be reused on its own. |
 | `drivetube/media.py` | **ffmpeg**: the command line, the FIFO queues, reading MJPEG frames, demuxing H.264 from MPEG-TS, MP3 audio. It knows nothing about YouTube: it gets ready-made URLs. |
+| `drivetube/live.py` | **Live TV**: M3U playlists (configured in admin, cached), channel parsing and the choice of the HLS variant handed to ffmpeg. |
+| `drivetube/twitch.py` | **Twitch** through yt-dlp: who is live, saved videos, stream URLs. |
+| `drivetube/sources.py` | Turns what follows `/watch?v=` into something to play: a YouTube id, `tv.<list>.<channel>`, `tw.<channel>` or `twv.<video>`. |
 | `drivetube/chunkproxy.py` | Local proxy that downloads any HTTP URL in 10 MB pieces and resumes dropped connections. |
-| `drivetube/player.py` | Playback for each browser session: ties `youtube` to `media`, handles start, restarts after errors or 403, pause and cleanup. |
+| `drivetube/player.py` | Playback for each browser session: ties `youtube`, `live` and `twitch` to `media`, handles start, restarts after errors or 403, pause and cleanup. |
 | `drivetube/server.py` | HTTP server: pages, player API, admin page, start-up. |
 | `drivetube/context.py` | Per-browser sessions, thread context and the privacy-aware log. |
 | `drivetube/access.py`, `settings.py` | Access codes and admin password; player settings and recent searches in browser cookies. |
@@ -290,6 +306,11 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.19
+- **New home with three sections**: live TV, YouTube and Twitch, each on its own page (`/live`, `/youtube`, `/twitch`) with a bar to switch between them and a *Riprendi* tile for what was playing. The YouTube home moved to `/youtube`; old links redirect.
+- **Live TV from M3U playlists**, more than one if you like, managed from the admin page. Default: the free Italian channels of Free-TV/IPTV. Geo-blocked channels (Ⓖ) are listed apart and, when they refuse the connection, the player says they are probably visible only from Italy. Qualities above 720p are skipped, the next channels of the list are offered for zapping, and a dropped live stream resumes without the picture going back in time.
+- **Twitch**: favourite channels kept in the browser, live status with preview, live streams and saved videos (VODs, with seeking) in the player.
 
 ### 15.18
 - The status line at the top of the player is gone by default. *Diagnostica* in the player settings turns on a tidy panel at the top left with separate rows for video, server, sync and audio. The same status is always included in *Segnala un problema* reports.

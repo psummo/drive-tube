@@ -87,10 +87,13 @@ from .player import (
     new_session,
     next_of_current,
     now_pos,
+    open_watch,
     set_page,
     start_ff,
     stop_all,
+    yt_here,
 )
+from . import live, twitch
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
 from .browser import (
@@ -109,6 +112,7 @@ from .browser import (
     login_type,
     refresh_supervisor,
 )
+from .pages import LANDING_HTML, LIVE_HTML, TWITCH_HTML, with_nav
 from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -131,7 +135,7 @@ def cookie_hdr(name, value, max_age=31536000, strict=False):
 
 
 # pagine HTML (senza accesso si va al login); il resto risponde 401
-HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
+HTML_PATHS = {"/", "/index.html", "/home", "/youtube", "/live", "/twitch", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
 
 
 
@@ -311,13 +315,33 @@ class Handler(BaseHTTPRequestHandler):
             print("GET", path, flush=True)
 
         if path == "/home":
+            if q.get("q"):
+                # vecchi link (e cronologia del browser): la ricerca ora sta in /youtube
+                self.redirect("/youtube?q=" + quote(q["q"][0]))
+                return
+            self.html_out(self.landing())
+            return
+
+        if path == "/live":
+            self.html_out(self.live_page(q))
+            return
+
+        if path == "/twitch":
+            self.twitch_page(q)
+            return
+
+        if path == "/twitch/status":
+            favs = twitch.favs_from_cookie(cookie_value(self.headers.get("Cookie"), twitch.COOKIE))
+            self.json_out(twitch.live_status(favs))
+            return
+
+        if path == "/youtube":
             # la pagina arriva subito con la ricerca appena fatta; la griglia mescolata
             # (ricerche recenti, suggeriti, feed, canali) la chiede la pagina a /home/more
             t0 = time.time()
             q = (parse_qs(u.query).get("q") or [""])[0]
             recent = push_recent(q, recent_from_cookie(self.headers.get("Cookie")))
-            url_now = cur().url
-            here = url_now.split("v=")[-1][:11] if "v=" in url_now else ""
+            here = yt_here()
             admin = self.who == "admin"
             home_more_start(cur().sid, q, recent, here)
             items = []
@@ -340,11 +364,10 @@ class Handler(BaseHTTPRequestHandler):
                 '}).catch(function(){m.textContent="suggerimenti non disponibili";});})();</script>'
                 % json.dumps(q).replace("</", "<\\/"))
             chips = "".join(
-                '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
+                '<a class="chip" href="/youtube?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
             )
-            body = HOME_HTML % ('<a class="back" href="/admin" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">admin</a>' if admin else "",
-              chips, "".join(items))
+            body = with_nav(HOME_HTML, "yt", admin) % ("", chips, "".join(items))
             print("home: pagina in %.1f s" % (time.time() - t0), flush=True)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -356,8 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/home/more":
             q = (parse_qs(u.query).get("q") or [""])[0]
             recent = recent_from_cookie(self.headers.get("Cookie"))
-            url_now = cur().url
-            here = url_now.split("v=")[-1][:11] if "v=" in url_now else ""
+            here = yt_here()
             body = home_more_get(cur().sid, q, recent, here).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -410,11 +432,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/watch":
             vid = (parse_qs(u.query).get("v") or [""])[0]
-            if vid:
-                set_page("https://www.youtube.com/watch?v=" + vid)
-            self.send_response(302)
-            self.send_header("Location", "/?watch=" + vid)
-            self.end_headers()
+            if not vid or not open_watch(vid):
+                self.redirect("/home")
+                return
+            self.redirect("/?watch=" + quote(vid))
             return
 
         if path == "/next":
@@ -614,8 +635,8 @@ class Handler(BaseHTTPRequestHandler):
             cfg_changed = apply_settings(self.headers.get("Cookie"))
             watch = (q.get("watch") or [""])[0]
             tpos = (q.get("t") or ["0"])[0]
-            if watch and watch not in cur().url:
-                set_page("https://www.youtube.com/watch?v=" + watch)
+            if watch and watch != (cur().src or {}).get("watch"):
+                open_watch(watch)
             try:
                 if float(tpos) > 0:
                     state["seek_base"] = float(tpos)
@@ -635,8 +656,9 @@ class Handler(BaseHTTPRequestHandler):
                 want = 0
             if cfg_changed or not (ffmpeg_alive() and abs(want - now_pos()) < 8):
                 new_session(want)
-            vid = cur().url.split("v=")[-1][:11] if "v=" in cur().url else ""
-            body = PLAYER_HTML.replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("__LIVE__", "1" if state.get("is_live") else "0").replace("__TITLE__", html.escape(state.get("title") or "drive-tube")).replace("WATCHID", vid).encode("utf-8")
+            src = cur().src or {}
+            vid = src.get("watch", "")
+            body = PLAYER_HTML.replace("__HOME__", src.get("home") or "/home").replace("__THUMB__", json.dumps(src.get("thumb") or "")).replace("__KIND__", src.get("kind") or "yt").replace("__DUR__", str(int(state["duration"] or 0))).replace("__FPS__", str(C("FPS"))).replace("__START__", str(int(float(tpos or 0)))).replace("__CFG__", json.dumps(cur().cfg)).replace("__OPTS__", json.dumps(SETTINGS_UI)).replace("__VER__", VERSION).replace("__VMODE__", str(int(cur().cfg.get("VMODE", 1)))).replace("__LIVE__", "1" if state.get("is_live") else "0").replace("__TITLE__", html.escape(state.get("title") or "drive-tube")).replace("WATCHID", vid).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -807,6 +829,117 @@ class Handler(BaseHTTPRequestHandler):
         # indirizzo sconosciuto: si torna alla home
         self.redirect("/home")
 
+    # ---------- pagine di scelta: home, TV, Twitch ----------
+    def html_out(self, body, cookies=()):
+        data = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        for c in cookies:
+            self.send_header("Set-Cookie", c)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def landing(self):
+        src = cur().src or {}
+        resume = ""
+        if cur().url and src.get("watch"):
+            title = state.get("title") or {"m3u": "canale TV", "twitch": "Twitch"}.get(src.get("kind"), "video")
+            thumb = src.get("thumb") or ""
+            resume = ('<a class="resume" href="/?watch=%s">%s<div><small>Riprendi</small><b>%s</b></div></a>'
+                      % (quote(src["watch"]), '<img src="%s" alt="">' % html.escape(thumb) if thumb else "",
+                         html.escape(title)))
+        return with_nav(LANDING_HTML, "home", self.who == "admin").replace("__RESUME__", resume)
+
+    def live_page(self, q):
+        lists = live.m3u_lists()
+        lid = (q.get("l") or [""])[0]
+        if not any(x["id"] == lid for x in lists):
+            lid = lists[0]["id"] if lists else ""
+        tabs = "".join('<a href="/live?l=%s"%s>%s</a>' % (quote(x["id"]), ' class="on"' if x["id"] == lid else "",
+                                                           html.escape(x["name"]))
+                       for x in lists) if len(lists) > 1 else ""
+        if not lists:
+            body = '<p class="note">Nessuna lista di canali. Aggiungine una dalla pagina admin (sezione "TV in diretta").</p>'
+        else:
+            rows, err = live.channels(lid)
+            now = (cur().src or {}).get("watch", "")
+            def card(r):
+                w = "tv.%s.%s" % (lid, r["key"])
+                pic = ('<img src="%s" loading="lazy" alt="" referrerpolicy="no-referrer">' % html.escape(r["logo"])
+                       if r["logo"] else '<div class="ph">%s</div>' % html.escape(r["name"][:2].upper()))
+                return ('<a class="ch%s" href="/watch?v=%s" data-n="%s">%s<span>%s</span></a>'
+                        % (" now" if w == now else "", w, html.escape(r["name"].lower()), pic, html.escape(r["name"])))
+            free = [r for r in rows if not r["geo"]]
+            geo = [r for r in rows if r["geo"]]
+            out = []
+            if err and not rows:
+                out.append('<p class="err">Lista non disponibile: %s</p>' % html.escape(err))
+            elif err:
+                out.append('<p class="note">Ultimo aggiornamento non riuscito (%s): mostro la lista precedente.</p>' % html.escape(err))
+            if free:
+                out.append('<h2>Canali (%d)</h2><div class="grid">%s</div>' % (len(free), "".join(card(r) for r in free)))
+            if geo:
+                out.append('<h2>Solo dall\'Italia &#9420; (%d)</h2><p class="note">Questi canali si vedono solo se il '
+                           'server ha un indirizzo italiano: da un server all\'estero di solito non partono.</p>'
+                           '<div class="grid geo">%s</div>' % (len(geo), "".join(card(r) for r in geo)))
+            body = "".join(out)
+        return with_nav(LIVE_HTML, "live", self.who == "admin").replace("__LISTS__", tabs).replace("__BODY__", body)
+
+    def twitch_page(self, q):
+        hdr = self.headers.get("Cookie")
+        favs = twitch.favs_from_cookie(cookie_value(hdr, twitch.COOKIE))
+        cookies = []
+        add = twitch.clean_name((q.get("add") or [""])[0])
+        drop = twitch.clean_name((q.get("del") or [""])[0])
+        if add or drop:
+            if add and add not in favs:
+                favs.insert(0, add)
+            if drop in favs:
+                favs.remove(drop)
+            cookies.append(cookie_hdr(twitch.COOKIE, twitch.favs_cookie(favs)))
+            if add or drop:
+                self.send_response(302)
+                self.send_header("Set-Cookie", cookies[0])
+                self.send_header("Location", "/twitch?c=" + add if add else "/twitch")
+                self.end_headers()
+                return
+        if q.get("add") and not add:
+            body = '<p class="note">Nome non valido: usa il nome del canale come appare in twitch.tv/<b>nome</b>.</p>'
+        else:
+            body = ""
+        ch = twitch.clean_name((q.get("c") or [""])[0])
+        if ch:
+            st = twitch.live_status([ch]).get(ch, {})
+            vods = twitch.vods(ch)
+            body += '<h2>%s</h2>' % html.escape(ch)
+            if st.get("live"):
+                body += ('<a class="btn" href="/watch?v=tw.%s">&#9679; Guarda la diretta</a><p class="note">%s</p>'
+                         % (ch, html.escape(st.get("title") or "")))
+            else:
+                body += '<p class="note">Non in diretta adesso.</p>'
+            if ch not in favs:
+                body += '<p><a class="btn" style="background:#7c3aed" href="/twitch?add=%s">+ aggiungi ai preferiti</a></p>' % ch
+            if vods:
+                body += "<h2>Video salvati</h2>"
+                for vid, title, dur in vods:
+                    d = "%d:%02d:%02d" % (dur // 3600, dur // 60 % 60, dur % 60) if dur else ""
+                    body += '<a class="vod" href="/watch?v=twv.%s"><b>%s</b><small>%s</small></a>' % (vid, html.escape(title), d)
+            else:
+                body += '<p class="note">Nessun video salvato (o Twitch non ha risposto).</p>'
+        if favs:
+            body += "<h2>Preferiti</h2><div class=\"grid\">"
+            for n in favs:
+                body += ('<div class="card" data-c="%s"><a class="go" href="/twitch?c=%s"><img src="%s" alt="" loading="lazy">'
+                         '<div class="t"><b>%s</b><small>controllo...</small></div></a><span class="badge">...</span>'
+                         '<a class="x" href="/twitch?del=%s" title="togli">&times;</a></div>'
+                         % (n, n, twitch.preview(n), n, n))
+            body += "</div>"
+        elif not ch:
+            body += '<p class="note">Aggiungi i canali che segui: restano salvati in questo browser.</p>'
+        self.html_out(with_nav(TWITCH_HTML, "tw", self.who == "admin").replace("__BODY__", body), cookies)
+
     # ---------- login ----------
     def page_login(self, msg="", status=200, admin=False):
         if admin:
@@ -887,6 +1020,9 @@ class Handler(BaseHTTPRequestHandler):
             addrs = [{"if": n, "ip": ip, "hotspot": is_hotspot(n, ip)} for n, ip in local_ipv4()]
             self.json_out({"ok": True, "version": VERSION, "codes": codes, "sessions": rows,
                            "addrs": addrs, "port": PORT, "termux": IS_TERMUX})
+            return
+        if path == "/admin/api/m3u":
+            self.json_out({"ok": True, "lists": live.list_info(), "default": live.DEFAULT_LISTS[0]["url"]})
             return
         if path == "/admin/api/update/check":
             self.json_out(check_update())
@@ -1043,6 +1179,20 @@ class Handler(BaseHTTPRequestHandler):
         self.redirect("/admin")
 
     def admin_api(self, what, data):
+        if what.startswith("m3u/"):
+            err = ""
+            if what == "m3u/add":
+                err = live.m3u_add(str(data.get("name") or ""), str(data.get("url") or ""))
+            elif what == "m3u/del":
+                live.m3u_del(str(data.get("id") or ""))
+            elif what == "m3u/reset":
+                live.m3u_reset()
+            elif what == "m3u/reload":
+                rows, err = live.m3u_reload(str(data.get("id") or ""))
+            else:
+                err = "comando sconosciuto"
+            self.json_out({"ok": not err, "error": err, "lists": live.list_info()})
+            return
         if what == "code/add":
             label = str(data.get("label") or "").strip()[:40]
             code = str(data.get("code") or "").strip().lower()

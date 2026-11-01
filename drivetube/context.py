@@ -103,6 +103,7 @@ class Session:
         self.tag = "%s:%s" % (who, sid[:4])
         self.lock = threading.Lock()
         self.url = ""
+        self.src = {}          # cosa si sta guardando: vedi sources.resolve
         self.cfg = dict(DEFAULTS)
         self.created = self.seen = time.time()
         base = os.path.join(TMP_DIR, "yt_%d_%s" % (PORT, sid[:16]))

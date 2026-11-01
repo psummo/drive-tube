@@ -219,13 +219,29 @@ def pump_audio(gen, path, skip=0):
         print("pump audio", e, flush=True)
 
 
-def ffmpeg_cmd(vsrc, asrc, pos):
-    net = [
-        "-user_agent", UA, "-headers", HEADERS,
-        "-ss", "%.3f" % pos, "-readrate", "16",
-        "-reconnect", "1", "-reconnect_streamed", "1",
-        "-reconnect_on_network_error", "1",
-    ]
+def ffmpeg_cmd(vsrc, asrc, pos, generic=False, live=False, ua=None, headers=""):
+    """generic: sorgente non YouTube (diretta HLS di una lista M3U, Twitch).
+    Li' i tempi del flusso non partono da zero (in diretta sono ore), quindi
+    niente -copyts: ffmpeg li riporta a zero e -output_ts_offset li sposta a
+    `pos`, cosi' il player li legge come per YouTube. Una diretta non si
+    cerca (-ss): dopo un'interruzione riprende dal momento attuale."""
+    if generic:
+        net = ["-user_agent", ua or UA]
+        if headers:
+            net += ["-headers", headers]
+        net += ["-protocol_whitelist", "http,https,tcp,tls,crypto,data"]
+        if pos > 0 and not live:
+            net += ["-ss", "%.3f" % pos]
+        if not live:
+            net += ["-readrate", "16"]
+        net += ["-reconnect", "1", "-reconnect_on_network_error", "1"]
+    else:
+        net = [
+            "-user_agent", UA, "-headers", HEADERS,
+            "-ss", "%.3f" % pos, "-readrate", "16",
+            "-reconnect", "1", "-reconnect_streamed", "1",
+            "-reconnect_on_network_error", "1",
+        ]
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y"] + net + ["-i", vsrc]
     if state["vmode"] == "h264":
         # video in copia, nessuna ricodifica: parte dal keyframe prima di pos e,
@@ -242,7 +258,10 @@ def ffmpeg_cmd(vsrc, asrc, pos):
             "-f", "mjpeg", cur().fifo_v,
         ]
     if state["vmode"] == "h264":
-        vout = ["-copyts"] + vout
+        if not generic:
+            vout = ["-copyts"] + vout
+        elif pos > 0:
+            vout = ["-output_ts_offset", "%.3f" % pos] + vout
     if not asrc:
         return cmd + vout
     if asrc == vsrc:

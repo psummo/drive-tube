@@ -1,0 +1,29 @@
+<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>drive-tube</title>
+<style>
+body{background:#111;color:#fff;font-family:sans-serif;margin:0}
+__NAVCSS__
+main{padding:16px;max-width:1200px;margin:0 auto}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.tile,.tile:visited{display:flex;flex-direction:column;justify-content:flex-end;min-height:180px;padding:20px;border-radius:16px;color:#fff;text-decoration:none;position:relative;overflow:hidden}
+.tile b{font-size:30px}
+.tile span{font-size:16px;opacity:.85;margin-top:6px}
+.tile i{position:absolute;top:16px;right:20px;font-style:normal;font-size:44px;opacity:.9}
+.tv{background:linear-gradient(135deg,#0f766e,#134e4a)}
+.yt{background:linear-gradient(135deg,#b91c1c,#7f1d1d)}
+.tw{background:linear-gradient(135deg,#7c3aed,#4c1d95)}
+.resume,.resume:visited{display:flex;gap:14px;align-items:center;background:#1f1f1f;border-radius:14px;padding:12px;margin-bottom:16px;color:#fff;text-decoration:none}
+.resume img{width:160px;aspect-ratio:16/9;object-fit:cover;background:#000;border-radius:8px}
+.resume small{display:block;color:#aaa;font-size:14px;margin-bottom:4px}
+.resume b{font-size:19px}
+</style></head><body>
+__NAV__
+<main>
+__RESUME__
+<div class="tiles">
+  <a class="tile tv" href="/live"><i>&#128250;</i><b>TV in diretta</b><span>Canali dalle liste M3U</span></a>
+  <a class="tile yt" href="/youtube"><i>&#9654;</i><b>YouTube</b><span>Ricerca, iscrizioni, suggeriti</span></a>
+  <a class="tile tw" href="/twitch"><i>&#127918;</i><b>Twitch</b><span>Dirette e video dei tuoi canali</span></a>
+</div>
+</main>
+</body></html>

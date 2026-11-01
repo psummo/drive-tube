@@ -88,7 +88,7 @@
 <div id="topr">
 <button id="fsbtn" type="button">Schermo intero</button>
 <button id="fitbtn" type="button">Adatta</button>
-<a id="homebtn" href="/home"><b>&#8962;</b>Home</a>
+<a id="homebtn" href="__HOME__"><b>&#8962;</b>Home</a>
 </div>
 <div id="side">
   <div id="panel"></div>
@@ -99,6 +99,8 @@
 var DURATION = __DUR__;
 var FPS = __FPS__;
 var VID = 'WATCHID';
+var THUMB = __THUMB__;   // copertina (YouTube, logo del canale TV, anteprima Twitch)
+var KIND = '__KIND__';   // yt, m3u, twitch
 var IS_LIVE = __LIVE__ === 1;
 var BUF_SEC = 15;
 var BUF_CAP = 6000;
@@ -271,7 +273,7 @@ function msUpdate(){
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: document.title || 'drive-tube', artist: 'drive-tube', album: 'drive-tube',
-      artwork: [{src: 'https://i.ytimg.com/vi/' + VID + '/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg'}]
+      artwork: THUMB ? [{src: THUMB, sizes: '480x360', type: 'image/jpeg'}] : []
     });
     msState();
     ui('mediaSession attiva (prova): ' + document.title);
@@ -1655,9 +1657,13 @@ function loadNext(){
     box.innerHTML = '';
     (list || []).forEach(function(n){
       var a = document.createElement('a');
-      a.href = '/watch?v=' + n.id;
+      a.href = n.href || ('/watch?v=' + n.id);
       a.style.cssText = 'width:128px;background:#222;display:block;flex:0 0 auto';
-      a.innerHTML = '<img src="https://i.ytimg.com/vi/' + n.id + '/hqdefault.jpg" style="width:100%;display:block"><span style="display:block;font-size:12px;padding:4px">' + (n.title || '').replace(/</g,'') + '</span>';
+      var t = (n.title || '').replace(/</g,'');
+      // loghi dei canali TV interi (contain), copertine dei video a tutto riquadro
+      var pic = n.thumb ? '<img src="' + n.thumb.replace(/"/g, '') + '" referrerpolicy="no-referrer" style="width:100%;aspect-ratio:16/9;display:block;object-fit:' + (KIND === 'm3u' ? 'contain' : 'cover') + ';background:#000">'
+        : '<div style="width:100%;aspect-ratio:16/9;background:#000;display:flex;align-items:center;justify-content:center;color:#777;font-weight:bold">' + t.slice(0, 2).toUpperCase() + '</div>';
+      a.innerHTML = pic + '<span style="display:block;font-size:12px;padding:4px">' + t + '</span>';
       box.appendChild(a);
     });
   }).catch(function(){});

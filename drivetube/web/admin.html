@@ -149,6 +149,18 @@ dispositivo sempre acceso a casa apre un tunnel SSH verso questo server (vedi il
 connection") e qui si mette <b>socks5://127.0.0.1:1080</b>. Lo usano yt-dlp e lo stream; se il tunnel cade si torna
 da soli all'indirizzo del server.</small>
 
+<h2>TV in diretta (liste M3U)</h2>
+<p><small>Le liste da cui la pagina "TV" prende i canali. Vanno bene le liste M3U/M3U8 pubbliche (per esempio quelle di
+Free-TV/IPTV o iptv-org). I canali segnati &#9420; si vedono solo da un indirizzo italiano: con un server all'estero
+di solito non partono.</small></p>
+<table id="m3u"><thead><tr><th>Nome</th><th>Canali</th><th>Indirizzo</th><th></th></tr></thead><tbody></tbody></table>
+<div class="row">
+  <input id="m3uname" placeholder="nome (es. Sport)" size="14">
+  <input id="m3uurl" placeholder="https://.../lista.m3u8" size="40">
+  <button class="go" id="m3uadd">Aggiungi lista</button>
+  <button id="m3ureset">Ripristina la lista predefinita</button>
+</div>
+
 <h2>Segnalazioni</h2>
 <p><small>Inviate dal player con "Segnala un problema" (nel pannello delle impostazioni): stato della sessione, del
 browser e ultime righe di log, senza dati personali. Apri o scarica quella che ti serve e mandala a chi ti aiuta.</small></p>
@@ -386,6 +398,39 @@ function loadReps(){
 }
 loadReps();
 setInterval(loadReps, 30000);
+
+function m3uRender(r){
+  if (!r || !r.lists) return;
+  if (r.error) say(r.error, true);
+  var tb = $('m3u').querySelector('tbody');
+  tb.innerHTML = '';
+  if (!r.lists.length) tb.innerHTML = '<tr><td colspan="4" class="na">nessuna lista: la pagina TV resta vuota</td></tr>';
+  r.lists.forEach(function(x){
+    var tr = document.createElement('tr');
+    var n = x.count == null ? '<span class="na">da caricare</span>' :
+      (x.err ? '<span class="ko">' + (x.count ? x.count + ' (vecchia) ' : '') + esc(x.err) + '</span>' : '<span class="ok">' + x.count + '</span>');
+    tr.innerHTML = '<td>' + esc(x.name) + '</td><td>' + n + '</td><td><small style="word-break:break-all">' + esc(x.url) + '</small></td>' +
+      '<td><button data-a="re">Ricarica</button> <button class="warn" data-a="del">Togli</button></td>';
+    tr.querySelector('[data-a=re]').onclick = function(){ say('carico ' + x.name + '...'); api('m3u/reload', {id: x.id}).then(function(r){ say(r.ok ? 'lista ricaricata' : '', !r.ok); m3uRender(r); }); };
+    tr.querySelector('[data-a=del]').onclick = function(){
+      if (!confirm('Togliere la lista ' + x.name + '?')) return;
+      api('m3u/del', {id: x.id}).then(m3uRender);
+    };
+    tb.appendChild(tr);
+  });
+}
+function loadM3u(){ api('m3u').then(m3uRender); }
+$('m3uadd').onclick = function(){
+  api('m3u/add', {name: $('m3uname').value, url: $('m3uurl').value}).then(function(r){
+    if (r.ok) { $('m3uname').value = ''; $('m3uurl').value = ''; say('lista aggiunta'); }
+    m3uRender(r);
+  });
+};
+$('m3ureset').onclick = function(){
+  if (!confirm('Tornare alla sola lista predefinita (TV italiane)?')) return;
+  api('m3u/reset', {}).then(m3uRender);
+};
+loadM3u();
 $('pottest').onclick = function(){
   var b = $('pottest'), out = $('potout'); b.disabled = true;
   out.style.display = 'block'; out.textContent = 'chiedo a YouTube un video di prova, puo\u0027 servire un minuto...';
