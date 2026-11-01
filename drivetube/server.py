@@ -93,6 +93,7 @@ from .player import (
 )
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
+from .browser import browser_cookies, browser_install, browser_status
 from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -821,7 +822,7 @@ class Handler(BaseHTTPRequestHandler):
             st = os.stat(COOKIES) if os.path.isfile(COOKIES) else None
             self.json_out({"present": bool(st), "size": st.st_size if st else 0,
                            "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode(),
-                           "feed": home_feed(), "check": dict(COOKIE_CHECK)})
+                           "feed": home_feed(), "check": dict(COOKIE_CHECK), "browser": browser_status()})
             return
         if path == "/admin/api/pot":
             st = pot_status()
@@ -1029,6 +1030,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _bprint("yt-dlp aggiornato a", v, flush=True)
             self.json_out({"ok": True, "version": v})
+            return
+        if what == "browser/install":
+            try:
+                st = browser_install()
+            except Exception as e:
+                _bprint("installazione browser non riuscita:", e, flush=True)
+                self.json_out({"ok": False, "error": str(e)})
+                return
+            self.json_out({"ok": True, "msg": "browser installato", "browser": st})
+            return
+        if what == "browser/cookies":
+            try:
+                r = browser_cookies()
+            except Exception as e:
+                _bprint("cookie dal browser non riusciti:", e, flush=True)
+                self.json_out({"ok": False, "error": str(e)})
+                return
+            self.json_out(dict(r, msg="%d cookie presi dal browser. %s" % (r["kept"], r["verdict"])))
             return
         if what == "cookies/check":
             r = cookies_check()

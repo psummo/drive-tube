@@ -122,6 +122,16 @@ def _ck_parse(text):
     return out
 
 
+def cookies_write(text):
+    """Sostituisce ~/cookies.txt (scrittura atomica, permessi 600, sotto il lucchetto)."""
+    with _ck_lock:
+        tmp = COOKIES + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, COOKIES)
+
+
 def cookie_checkout():
     """(testo originale, percorso della copia privata) per un yt-dlp."""
     with _ck_lock:
