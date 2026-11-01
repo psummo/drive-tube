@@ -93,7 +93,22 @@ from .player import (
 )
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
-from .browser import browser_cookies_start, browser_install, browser_job, browser_status
+from .browser import (
+    account_refresh,
+    browser_cookies_start,
+    browser_install,
+    browser_job,
+    browser_status,
+    login_click,
+    login_close,
+    login_done,
+    login_key,
+    login_shot,
+    login_start,
+    login_state,
+    login_type,
+    refresh_supervisor,
+)
 from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -782,7 +797,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if not is_admin(hdr):
-            if path.startswith("/admin/api/") or path in ("/admin/log", "/admin/report"):
+            if path.startswith("/admin/api/") or path in ("/admin/log", "/admin/report", "/admin/browser/shot"):
                 self.json_out({"ok": False, "error": "accesso admin scaduto, ricarica la pagina"}, 403)
             else:
                 self.page_login(admin=True)
@@ -822,7 +837,8 @@ class Handler(BaseHTTPRequestHandler):
             st = os.stat(COOKIES) if os.path.isfile(COOKIES) else None
             self.json_out({"present": bool(st), "size": st.st_size if st else 0,
                            "mtime": int(st.st_mtime) if st else 0, "mode": cookie_mode(),
-                           "feed": home_feed(), "check": dict(COOKIE_CHECK), "browser": browser_status()})
+                           "feed": home_feed(), "check": dict(COOKIE_CHECK), "browser": browser_status(),
+                           "account": login_state()})
             return
         if path == "/admin/api/pot":
             st = pot_status()
@@ -834,6 +850,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/admin/api/ytdlp":
             self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
+            return
+        if path == "/admin/browser/shot":
+            try:
+                img, _ = login_shot()
+            except Exception as e:
+                self.send_error(404, str(e)[:100])
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(img)))
+            self.end_headers()
+            self.wfile.write(img)
             return
         if path == "/admin/api/browser":
             self.json_out(browser_job())
@@ -1043,6 +1072,37 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.json_out({"ok": True, "msg": "browser installato", "browser": st})
             return
+        if what.startswith("browser/login/"):
+            act = what[len("browser/login/"):]
+            try:
+                if act == "start":
+                    r = login_start()
+                elif act == "click":
+                    r = login_click(float(data.get("x", 0)), float(data.get("y", 0)))
+                elif act == "type":
+                    r = login_type(str(data.get("text") or "")[:500])
+                elif act == "key":
+                    r = login_key(str(data.get("key") or ""))
+                elif act == "done":
+                    r = login_done()
+                    ok = r["check"].get("ok")
+                    r = dict(r, msg="accesso salvato: %d cookie dell'account. %s" % (
+                        r["kept"], "YouTube riconosce l'account" if ok else (r["check"].get("msg") or "")))
+                elif act == "close":
+                    login_close()
+                    r = {"msg": "browser chiuso"}
+                elif act == "refresh":
+                    r = account_refresh("a mano") or {"ok": False, "msg": "nessun account collegato (o accesso in corso)"}
+                else:
+                    raise RuntimeError("azione sconosciuta")
+            except Exception as e:
+                _bprint("login Google (%s):" % act, e, flush=True)
+                self.json_out({"ok": False, "error": str(e)})
+                return
+            r = r if isinstance(r, dict) else {}
+            r.setdefault("ok", True)
+            self.json_out(r)
+            return
         if what == "browser/cookies":
             started = browser_cookies_start()
             self.json_out({"ok": True, "started": started,
@@ -1210,6 +1270,7 @@ def main():
     threading.Thread(target=janitor, daemon=True).start()
     threading.Thread(target=pot_supervisor, daemon=True).start()
     start_chunk_proxy()
+    threading.Thread(target=refresh_supervisor, daemon=True).start()
     serve_https()
     try:
         QuietServer(("0.0.0.0", PORT), Handler).serve_forever()

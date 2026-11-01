@@ -6,6 +6,7 @@ installa dalla pagina admin; Chromium ha bisogno di alcune librerie di sistema
 import glob
 import json
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -179,3 +180,266 @@ def browser_cookies():
     _step(verdict)
     return {"ok": True, "kept": kept, "names": names, "steps": res.get("steps", []), "verdict": verdict,
             "video_ok": t.returncode == 0}
+
+
+# ================= login a un account Google nel browser del server =================
+# Una sessione interattiva (browser_session.js) con profilo persistente: dalla pagina
+# admin si vede la schermata, si clicca e si scrive. Finito l'accesso, i cookie
+# dell'account vanno a yt-dlp; poi il profilo li rinnova da solo (account_refresh).
+
+PROFILE_DIR = os.path.join(BROWSER_DIR, "profile")
+LOGIN_FILE = os.path.join(BROWSER_DIR, "login.json")
+SHOT = os.path.join(BROWSER_DIR, "shot.jpg")
+SESSION_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "browser_session.js")
+LOGIN_URL = os.environ.get("DT_LOGIN_URL") or \
+    "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F"
+YT_HOME = os.environ.get("DT_YT_BASE") or "https://www.youtube.com"
+REFRESH_EVERY = 6 * 3600
+IDLE_CLOSE_LOGIN = 15 * 60
+
+
+class BrowserSession:
+    """Un Chromium con il profilo persistente, comandato riga per riga."""
+
+    def __init__(self):
+        node, _ = find_node()
+        if not node or not browser_status()["ready"]:
+            raise RuntimeError("prima installa il browser (pulsante qui sopra)")
+        os.makedirs(PROFILE_DIR, mode=0o700, exist_ok=True)
+        env = dict(node_env(node), DT_BROWSER_DIR=BROWSER_DIR, DT_PROFILE=PROFILE_DIR, DT_UA=UA)
+        self.p = subprocess.Popen([node, SESSION_SCRIPT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True, env=env, bufsize=1)
+        self.q = queue.Queue()
+        self.lock = threading.Lock()
+        self.seen = time.time()
+        threading.Thread(target=self._read, daemon=True).start()
+        first = self._get(90)
+        if not first.get("ok"):
+            self.close()
+            err = first.get("error") or "il browser non e' partito"
+            if any(k in err for k in ("shared libraries", "missing dependencies", "Missing libraries")):
+                err = "a Chromium mancano librerie di sistema. Via SSH lancia una volta: " + browser_status()["deps_cmd"]
+            raise RuntimeError(err)
+
+    def _read(self):
+        for line in self.p.stdout:
+            try:
+                self.q.put(json.loads(line))
+            except ValueError:
+                pass
+        self.q.put({"ok": False, "error": "il browser si e' chiuso"})
+
+    def _get(self, timeout):
+        try:
+            return self.q.get(timeout=timeout)
+        except queue.Empty:
+            return {"ok": False, "error": "il browser non risponde"}
+
+    def cmd(self, timeout=90, **c):
+        with self.lock:
+            self.seen = time.time()
+            if self.p.poll() is not None:
+                return {"ok": False, "error": "il browser si e' chiuso"}
+            try:
+                self.p.stdin.write(json.dumps(c) + "\n")
+                self.p.stdin.flush()
+            except OSError:
+                return {"ok": False, "error": "il browser si e' chiuso"}
+            return self._get(timeout)
+
+    def alive(self):
+        return self.p.poll() is None
+
+    def close(self):
+        try:
+            if self.alive():
+                self.cmd(timeout=15, cmd="close")
+        except Exception:
+            pass
+        try:
+            self.p.wait(timeout=10)
+        except Exception:
+            self.p.kill()
+
+
+_login = {"s": None}
+_login_lock = threading.Lock()
+
+
+def _account_names(text):
+    return sorted({line.split("\t")[5] for line in text.splitlines() if line.count("\t") == 6})
+
+
+def _has_account(names):
+    return any(n in ("SID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO") for n in names)
+
+
+def login_state():
+    s = _login["s"]
+    info = {}
+    try:
+        with open(LOGIN_FILE) as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return {"active": bool(s and s.alive()), "logged": bool(info.get("t")), "since": info.get("t"),
+            "last_refresh": info.get("refresh"), "refresh_msg": info.get("refresh_msg", "")}
+
+
+def _save_login(**kw):
+    info = {}
+    try:
+        with open(LOGIN_FILE) as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        pass
+    info.update(kw)
+    with open(LOGIN_FILE, "w") as f:
+        json.dump(info, f)
+
+
+def _session():
+    s = _login["s"]
+    if not (s and s.alive()):
+        raise RuntimeError("nessun accesso in corso: premi \"Accedi con un account Google\"")
+    return s
+
+
+def login_start():
+    with _login_lock:
+        if _login["s"] and _login["s"].alive():
+            _login["s"].close()
+        _login["s"] = BrowserSession()
+    r = _login["s"].cmd(cmd="goto", url=LOGIN_URL, wait=2500)
+    print("login Google nel browser del server: aperto", flush=True)
+    if not r.get("ok"):
+        raise RuntimeError("pagina di accesso non aperta: " + r.get("error", ""))
+    return r
+
+
+def login_shot():
+    r = _session().cmd(cmd="shot", path=SHOT, timeout=30)
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error", "schermata non riuscita"))
+    with open(SHOT, "rb") as f:
+        return f.read(), r
+
+
+def login_click(x, y):
+    return _session().cmd(cmd="click", x=int(x), y=int(y))
+
+
+def login_type(text):
+    # il testo (anche la password) va solo alla pagina: mai nel log
+    print("login Google: testo scritto (%d caratteri)" % len(text), flush=True)
+    return _session().cmd(cmd="type", text=str(text))
+
+
+def login_key(key):
+    if key not in ("Enter", "Tab", "Backspace", "Escape", "ArrowDown", "ArrowUp", "Space"):
+        raise RuntimeError("tasto non ammesso")
+    return _session().cmd(cmd="key", key=key)
+
+
+def login_close():
+    with _login_lock:
+        s, _login["s"] = _login["s"], None
+    if s:
+        s.close()
+
+
+def login_done():
+    """Finito l'accesso: passa da YouTube, salva i cookie dell'account e chiude."""
+    s = _session()
+    s.cmd(cmd="goto", url=YT_HOME + "/", wait=4000)
+    r = s.cmd(cmd="cookies")
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error", "cookie non letti"))
+    text, kept, _ = cookies_youtube_only(_netscape(r.get("cookies") or []))
+    names = _account_names(text)
+    if not _has_account(names):
+        raise RuntimeError("su YouTube non risulta nessun account collegato: completa l'accesso e riprova")
+    cookies_write(text)
+    _save_login(t=time.time(), refresh=time.time(), refresh_msg="accesso fatto")
+    login_close()
+    print("login Google riuscito: %d cookie dell'account salvati" % kept, flush=True)
+    from .youtube import cookies_check
+    chk = cookies_check()
+    return {"kept": kept, "check": chk}
+
+
+def _netscape_to_pw(text):
+    """Cookie di ~/cookies.txt nel formato di Playwright (per ricaricarli nel profilo)."""
+    out = []
+    for line in text.splitlines():
+        http_only = line.startswith("#HttpOnly_")
+        if line.startswith("#") and not http_only:
+            continue
+        f = line.split("\t")
+        if len(f) != 7:
+            continue
+        dom = f[0][len("#HttpOnly_"):] if http_only else f[0]
+        out.append({"name": f[5], "value": f[6], "domain": dom, "path": f[2] or "/",
+                    "expires": int(f[4]) if f[4].isdigit() and int(f[4]) > 0 else -1,
+                    "httpOnly": http_only, "secure": f[3] == "TRUE"})
+    return out
+
+
+def account_refresh(reason="programmato"):
+    """Riapre YouTube con il profilo collegato e ripassa a yt-dlp i cookie aggiornati.
+    Prima ricarica nel profilo i valori piu' recenti di ~/cookies.txt (ruotati da
+    yt-dlp), cosi' browser e yt-dlp proseguono sulla stessa sessione."""
+    st = login_state()
+    if not st["logged"] or st["active"]:
+        return None
+    with _login_lock:
+        s = BrowserSession()
+    try:
+        try:
+            with open(COOKIES, encoding="utf-8", errors="replace") as f:
+                current = _netscape_to_pw(f.read())
+            if current:
+                s.cmd(cmd="addcookies", cookies=current)
+        except OSError:
+            pass
+        s.cmd(cmd="goto", url=YT_HOME + "/", wait=5000)
+        s.cmd(cmd="goto", url=YT_HOME + "/watch?v=jNQXAC9IVRw", wait=6000)
+        r = s.cmd(cmd="cookies")
+    finally:
+        s.close()
+    text, kept, _ = cookies_youtube_only(_netscape((r or {}).get("cookies") or []))
+    names = _account_names(text)
+    if not _has_account(names):
+        msg = "l'account nel browser del server non e' piu' collegato: rifai l'accesso dalla pagina admin"
+        _save_login(refresh=time.time(), refresh_msg=msg)
+        COOKIE_CHECK.update(t=time.time(), ok=False, msg=msg)
+        print("rinnovo cookie (%s): %s" % (reason, msg), flush=True)
+        return {"ok": False, "msg": msg}
+    cookies_write(text)
+    _save_login(refresh=time.time(), refresh_msg="rinnovati %d cookie (%s)" % (kept, reason))
+    COOKIE_CHECK.update(t=time.time(), ok=None, msg="cookie rinnovati dal browser del server")
+    print("rinnovo cookie dal browser del server (%s): %d cookie" % (reason, kept), flush=True)
+    return {"ok": True, "kept": kept}
+
+
+def refresh_supervisor():
+    """Ogni 5 minuti: chiude l'accesso interattivo dimenticato aperto e, con un
+    account collegato, rinnova i cookie ogni 6 ore o subito se risultano scaduti."""
+    last_try = 0.0
+    while True:
+        time.sleep(300)
+        try:
+            s = _login["s"]
+            if s and s.alive() and time.time() - s.seen > IDLE_CLOSE_LOGIN:
+                login_close()
+                print("accesso Google lasciato aperto: chiuso", flush=True)
+            st = login_state()
+            if not st["logged"] or st["active"]:
+                continue
+            due = time.time() - (st["last_refresh"] or 0) > REFRESH_EVERY
+            dead = COOKIE_CHECK.get("ok") is False and time.time() - last_try > 1800
+            if due or dead:
+                last_try = time.time()
+                account_refresh("cookie scaduti" if dead else "ogni 6 ore")
+        except Exception as e:
+            print("rinnovo cookie non riuscito:", e, flush=True)

@@ -74,6 +74,31 @@ ottiene (da visitatore, senza account), poi prova subito un video con quei cooki
 un comando per le librerie di sistema: se serve, lo trovi qui sotto.</small>
 <div class="row"><small id="brdeps"></small></div>
 <pre id="brlog" style="display:none;white-space:pre-wrap;background:#000;color:#ddd;padding:10px;border-radius:8px;font-size:13px"></pre>
+<div class="row">
+  <button id="lgstart" class="go">Accedi con un account Google nel browser del server</button>
+  <button id="lgrefresh">Rinnova ora i cookie dell'account</button>
+  <span id="lgstate" class="na"></span>
+</div>
+<small>Usa un account secondario (non serve Gmail: un account Google si crea anche con un'altra email). Fai l'accesso
+una volta qui: il browser del server tiene il profilo e rinnova da solo i cookie ogni 6 ore e quando scadono. La
+password va solo alla pagina di Google sul server: non viene salvata ne' scritta nel log.</small>
+<div id="lgbox" style="display:none;margin-top:10px">
+  <div class="row"><small id="lgwarn" class="ko"></small></div>
+  <img id="lgshot" alt="schermata del browser del server" style="max-width:100%;border:1px solid #444;border-radius:6px;cursor:crosshair;display:block">
+  <div class="row"><small id="lgurl" class="na"></small></div>
+  <div class="row">
+    <input id="lgtext" type="text" placeholder="email o codice: clicca prima sul campo nella schermata" autocomplete="off" size="36">
+    <button id="lgtype">Scrivi</button>
+    <input id="lgpass" type="password" placeholder="password" autocomplete="new-password" size="20">
+    <button id="lgtypepass">Scrivi password</button>
+  </div>
+  <div class="row">
+    <button data-lgkey="Enter">Invio</button> <button data-lgkey="Tab">Tab</button>
+    <button data-lgkey="Backspace">Cancella</button> <button id="lgreload">Aggiorna schermata</button>
+    <button id="lgdone" class="go">Ho fatto l'accesso: salva i cookie</button>
+    <button id="lgclose" class="warn">Chiudi</button>
+  </div>
+</div>
 <small>Perche' durino: apri una finestra in incognito, accedi a YouTube, esporta i cookie (formato Netscape, per
 esempio con l'estensione "Get cookies.txt LOCALLY"), caricali qui e poi chiudi la finestra senza usarla piu'. Se li
 esporti dal browser che usi di solito, YouTube li sostituisce dopo poco e qui smettono di funzionare.</small>
@@ -390,6 +415,12 @@ function loadCk(){
     $('brcookies').disabled = !b.ready;
     $('brstate').textContent = b.ready ? 'browser pronto' : (!b.node ? 'manca Node (sezione PO token)' : 'browser non installato');
     $('brdeps').textContent = b.ready ? 'Se il browser non parte per librerie mancanti: ' + b.deps_cmd : '';
+    var a = j.account || {};
+    $('lgstart').disabled = !b.ready;
+    $('lgrefresh').style.display = a.logged ? '' : 'none';
+    $('lgstate').textContent = a.active ? 'accesso in corso' : a.logged ?
+      'account collegato dal ' + new Date(a.since * 1000).toLocaleString() + (a.refresh_msg ? ' · ' + a.refresh_msg : '') : '';
+    $('lgstate').className = a.logged ? 'ok' : 'na';
     document.querySelectorAll('[data-feed]').forEach(function(b){ b.className = b.getAttribute('data-feed') === j.feed ? 'go' : ''; });
   });
 }
@@ -420,6 +451,53 @@ $('brcookies').onclick = function(){
   api('browser/cookies', {}).then(function(r){ if (brTimer) clearTimeout(brTimer); pollBr(); });
 };
 pollBr();
+var lgTimer = null;
+function lgShot(){
+  if ($('lgbox').style.display === 'none') return;
+  var img = new Image();
+  img.onload = function(){ $('lgshot').src = img.src; };
+  img.src = '/admin/browser/shot?t=' + Date.now();
+  if (lgTimer) clearTimeout(lgTimer);
+  lgTimer = setTimeout(lgShot, 2000);
+}
+function lgAct(act, data){
+  return api('browser/login/' + act, data || {}).then(function(r){
+    if (r && r.ok === false) say(r.error, true);
+    if (r && r.url) $('lgurl').textContent = r.url;
+    setTimeout(lgShot, 300);
+    return r;
+  });
+}
+$('lgstart').onclick = function(){
+  $('lgbox').style.display = '';
+  $('lgwarn').textContent = location.protocol === 'https:' ? '' :
+    'Attenzione: questa pagina e\' in http, la password viaggia in chiaro fino al server. Se hai l\'HTTPS (porta 8443) usa quello.';
+  $('lgstate').textContent = 'apro il browser sul server...';
+  lgAct('start').then(function(){ loadCk(); lgShot(); });
+};
+$('lgshot').onclick = function(ev){
+  var r = $('lgshot').getBoundingClientRect();
+  var x = (ev.clientX - r.left) * $('lgshot').naturalWidth / r.width;
+  var y = (ev.clientY - r.top) * $('lgshot').naturalHeight / r.height;
+  lgAct('click', {x: x, y: y});
+};
+$('lgtype').onclick = function(){ lgAct('type', {text: $('lgtext').value}); $('lgtext').value = ''; };
+$('lgtypepass').onclick = function(){ lgAct('type', {text: $('lgpass').value}); $('lgpass').value = ''; };
+document.querySelectorAll('[data-lgkey]').forEach(function(b){
+  b.onclick = function(){ lgAct('key', {key: b.getAttribute('data-lgkey')}); };
+});
+$('lgreload').onclick = lgShot;
+$('lgdone').onclick = function(){
+  lgAct('done').then(function(r){
+    if (r && r.ok !== false) { $('lgbox').style.display = 'none'; done(r); }
+    loadCk();
+  });
+};
+$('lgclose').onclick = function(){ lgAct('close').then(function(){ $('lgbox').style.display = 'none'; loadCk(); }); };
+$('lgrefresh').onclick = function(){
+  $('lgstate').textContent = 'rinnovo i cookie con il browser del server...';
+  api('browser/login/refresh', {}).then(function(r){ done(r); loadCk(); });
+};
 $('ckverify').onclick = function(){
   $('ckcheck').textContent = 'verifico...';
   api('cookies/check', {}).then(function(r){ done(r); loadCk(); });
