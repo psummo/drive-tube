@@ -36,7 +36,9 @@ const { chromium } = require(path.join(process.env.DT_BROWSER_DIR, 'node_modules
     out.cookies = await ctx.cookies();
     out.ok = true;
   } catch (e) {
-    out.error = String(e && e.message || e).split('\n')[0].slice(0, 300);
+    // Playwright mette il motivo vero nelle righe dopo la prima (es. librerie mancanti)
+    out.error = String(e && e.message || e).split('\n')
+      .map(s => s.replace(/[\u2500-\u257f]/g, '').trim()).filter(Boolean).join(' | ').slice(0, 800);
   } finally {
     if (browser) await browser.close().catch(() => {});
   }

@@ -289,6 +289,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.14
+- Browser cookies: when Chromium cannot start, the admin page now shows Playwright's full reason instead of only its first line, and for missing system libraries it gives the exact one-time command to run over SSH.
+
 ### 15.13
 - **Cookies from a browser on the server**: the admin page can install Playwright and Chromium and use them to open YouTube, accept the consent banner, open a video and save the resulting cookies (visitor, no account, including HttpOnly ones), then test a video with them. A web page inside drive-tube cannot do this (`/frametest` shows why), a real browser on the server can.
 

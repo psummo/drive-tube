@@ -32,7 +32,7 @@ def browser_status():
     have_chromium = bool(glob.glob(os.path.join(_browsers_path(), "chromium*")))
     return {"node": bool(node), "playwright": have_pw, "chromium": have_chromium,
             "ready": bool(node) and have_pw and have_chromium,
-            "deps_cmd": "sudo %s %s install-deps chromium" % (
+            "deps_cmd": 'sudo "%s" %s install-deps chromium' % (
                 node or "node", os.path.join(BROWSER_DIR, "node_modules", "playwright", "cli.js"))}
 
 
@@ -99,8 +99,10 @@ def browser_cookies():
         res = {"ok": False, "error": (p.stderr or p.stdout or "nessuna risposta").strip()[-300:]}
     if not res.get("ok"):
         err = res.get("error") or (p.stderr or "").strip()[-300:]
-        if "error while loading shared libraries" in err or "Host system is missing dependencies" in err:
-            err += " - manca qualche libreria di sistema: via SSH lancia una volta: " + st["deps_cmd"]
+        if any(k in err for k in ("error while loading shared libraries", "missing dependencies",
+                                  "Missing libraries", "install-deps", "cannot open shared object")):
+            err = ("a Chromium mancano librerie di sistema. Via SSH lancia una volta: " + st["deps_cmd"] +
+                   "  (dettagli: " + err[:300] + ")")
         raise RuntimeError("il browser non e' riuscito: " + err)
     text, kept, dropped = cookies_youtube_only(_netscape(res.get("cookies") or []))
     if not kept:
