@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test YouTube in un frame</title>
+<style>
+  html,body{margin:0;background:#111;color:#fff;font-family:sans-serif}
+  main{padding:12px;max-width:1400px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 10px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:800px){.grid{grid-template-columns:1fr}}
+  section{background:#1b1b1b;border-radius:12px;padding:12px}
+  h2{font-size:17px;margin:0 0 8px}
+  iframe{width:100%;height:360px;border:0;border-radius:8px;background:#000}
+  button,a.btn{font-size:17px;padding:10px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;text-decoration:none;display:inline-block;margin:8px 8px 0 0}
+  a.grey{background:#333}
+  small{color:#aaa;display:block;margin-top:6px;line-height:1.4}
+  #out{font:14px/1.5 monospace;white-space:pre-wrap;background:#000;border-radius:10px;padding:10px;margin-top:12px;min-height:60px}
+</style></head><body>
+<main>
+  <h1>YouTube dentro drive-tube: si possono prendere i cookie?</h1>
+  <div class="grid">
+    <section>
+      <h2>1. youtube.com in un frame</h2>
+      <iframe id="f1" src="https://www.youtube.com/"></iframe>
+      <small>Se resta vuoto o dice che "si e' rifiutato di connettersi", YouTube non si lascia aprire dentro un'altra
+      pagina (intestazione X-Frame-Options).</small>
+    </section>
+    <section>
+      <h2>2. Player incorporabile (/embed/)</h2>
+      <iframe id="f2" src="https://www.youtube.com/embed/dQw4w9WgXcQ" allow="autoplay; encrypted-media"></iframe>
+      <small>Questo si apre, perche' e' fatto per essere incorporato. Usa pero' un &lt;video&gt;: in marcia la Tesla lo blocca.</small>
+    </section>
+  </div>
+  <button id="read">Prova a leggere i cookie dei frame</button>
+  <a class="btn grey" href="/test">Indietro</a>
+  <div id="out">Premi il pulsante: il risultato compare qui e nel log del server.</div>
+</main>
+<script>
+var out = document.getElementById('out');
+function line(t){
+  out.textContent += '\n' + t;
+  fetch('/clog?m=' + encodeURIComponent('frametest: ' + t)).catch(function(){});
+}
+function tryFrame(id, label){
+  var f = document.getElementById(id);
+  try {
+    var c = f.contentDocument ? f.contentDocument.cookie : f.contentWindow.document.cookie;
+    line(label + ': cookie letti: ' + (c || '(vuoto)'));
+  } catch (e) {
+    line(label + ': il browser blocca l\'accesso (' + e.name + ': ' + String(e.message).slice(0, 120) + ')');
+  }
+}
+document.getElementById('read').onclick = function(){
+  out.textContent = 'Risultato:';
+  tryFrame('f1', 'frame youtube.com');
+  tryFrame('f2', 'frame /embed/');
+  line('cookie di questa pagina (drive-tube): ' + (document.cookie ? 'presenti, ma sono solo quelli di drive-tube' : '(nessuno leggibile)'));
+};
+['f1', 'f2'].forEach(function(id){
+  document.getElementById(id).addEventListener('load', function(){ line('frame ' + id + ': evento "load" (non vuol dire che YouTube sia visibile)'); });
+});
+</script>
+</body></html>

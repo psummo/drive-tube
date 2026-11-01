@@ -93,7 +93,7 @@ from .player import (
 )
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
-from .pages import KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
+from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
 def cards(rows, seen, cur):
@@ -115,7 +115,7 @@ def cookie_hdr(name, value, max_age=31536000, strict=False):
 
 
 # pagine HTML (senza accesso si va al login); il resto risponde 401
-HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest"}
+HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -367,6 +367,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write((state.get("err") or "").encode("utf-8"))
+            return
+
+        if path == "/frametest":
+            body = FRAMETEST_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/keytest":

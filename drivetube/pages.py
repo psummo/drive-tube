@@ -32,6 +32,7 @@ def h264_wasm_gz():
 
 TEST_HTML = page("test.html")
 KEYTEST_HTML = page("keytest.html")
+FRAMETEST_HTML = page("frametest.html")
 
 
 ADMIN_HTML = page("admin.html")

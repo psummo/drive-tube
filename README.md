@@ -241,6 +241,7 @@ Releases are published with a `vX.Y` tag: GitHub Actions checks the syntax and c
 Available after login:
 - `/test`: which features the browser offers (WebCodecs, WebAssembly, WebGL, image formats).
 - `/wasmtest`: downloads a few seconds of the current video in H.264, measures how many frames per second the browser can decode and plays it in real time.
+- `/frametest`: loads youtube.com and the embeddable player in frames inside drive-tube and tries to read their cookies, to show what the browser allows (YouTube refuses to be framed and cross-site cookies are never readable).
 - `/keytest`: shows every event the browser receives from touches (press length, long press), keys (including media and volume keys), the scroll wheel, game controllers and the Media Session API (the system's "now playing" card and its next/previous/pause buttons). Each event is also written to the server log as `keytest: ...`, so a test in the car can be read later from the admin page. Use it to find out which steering-wheel buttons reach a web page.
 
 ## Code layout
@@ -285,6 +286,9 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.12
+- `/frametest` page (linked from `/test`): YouTube inside drive-tube in a frame, and an attempt to read its cookies, to check on the car what the browser allows.
 
 ### 15.11
 - **Android (Termux)**: drive-tube runs on a phone, with the Tesla on the phone's hotspot (see [On an Android phone](#on-an-android-phone-termux)). `termux/setup.sh` installs everything and sets up automatic start, `termux/start.sh` keeps the phone awake, restarts drive-tube if it stops and prints the address to open in the car. The ffmpeg exchange files go to the system's temporary folder instead of `/tmp`, which Android does not have; on Termux the yt-dlp update uses `pip` and Node comes from Termux's packages. The server prints its addresses at start, with the hotspot one marked, and the admin page lists them too.
