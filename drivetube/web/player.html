@@ -10,7 +10,10 @@
     background:rgba(0,0,0,.72);z-index:3;color:#fff;flex-direction:column;
   }
   #msg{font-size:28px;margin-bottom:24px;text-align:center;white-space:pre-line;line-height:1.35}
-  #hud{position:fixed;top:14px;left:0;right:0;text-align:center;z-index:7;font-size:20px;color:#fff;text-shadow:0 1px 4px #000;pointer-events:none}
+  #hud{position:fixed;top:74px;left:12px;z-index:7;display:none;pointer-events:none;
+       background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:8px 12px;
+       font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;color:#eee;max-width:min(520px,80vw)}
+  #hud b{display:inline-block;min-width:78px;color:#9ca3af;font-weight:normal}
   #go{
     width:160px;height:160px;border-radius:50%;background:#fff;color:#000;border:0;
     font-size:72px;display:none;
@@ -179,23 +182,35 @@ function pollRate(){
     serverFrames = parseInt(bits[0], 10) || 0;
     var v = parseFloat(p[1]);
     if (!isNaN(v) && v > 0) rateMb = v;
-    var hud = document.getElementById('hud');
-    if (hud) {
-      var desync = '';
-      if (actx && audioArm && drawnT > 0) {
-        var ear = earTime();
-        var diff = ear - drawnT;
-        if (Math.abs(diff) > 0.15) desync = (diff > 0 ? '  audio avanti ' : '  video avanti ') + Math.abs(diff).toFixed(1) + 's';
-        else desync = '  sync ok';
-      }
-      var fps = '';
-      if (vmode === 'h264' && hs && hs.started && !userPaused && !stalled) {
-        fps = '  ' + hs.fps.toFixed(0) + ' fps (video ' + (1 / hs.dur).toFixed(0) + ')' + (hs.lateNow ? '  saltati ' + hs.lateNow : '');
-      }
-      var au = '  audio ' + (actx ? actx.state : 'assente') + ' ' + aDiag.kb.toFixed(0) + 'KB ' + aDiag.blk + 'blk ' + aDiag.sched + 'prog' + (aDiag.err ? ' ' + aDiag.err + 'err' : '') + (audioHold.length ? ' attesa ' + audioHold.length : '');
-      hud.textContent = (vmode === 'h264' && hs ? 'H.264 pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'browser ' + frames.length) + fps + '  server ' + serverFrames + (rateMb ? '  ' + rateMb.toFixed(2) + ' MB/s' : '') + desync + au;
+    var desync = '-';
+    if (actx && audioArm && drawnT > 0) {
+      var diff = earTime() - drawnT;
+      desync = Math.abs(diff) > 0.15 ? (diff > 0 ? 'audio avanti ' : 'video avanti ') + Math.abs(diff).toFixed(1) + ' s' : 'ok';
     }
+    var video = vmode === 'h264' && hs ? 'H.264, pronto ' + Math.max(0, hAhead()).toFixed(0) + ' s' : 'MJPEG, ' + frames.length + ' frame nel browser';
+    if (vmode === 'h264' && hs && hs.started && !userPaused && !stalled) {
+      video += ', ' + hs.fps.toFixed(0) + '/' + (1 / hs.dur).toFixed(0) + ' fps' + (hs.lateNow ? ', saltati ' + hs.lateNow : '');
+    }
+    diag([
+      ['Video', video],
+      ['Server', serverFrames + ' frame in coda' + (rateMb ? ', ' + rateMb.toFixed(2) + ' MB/s' : '')],
+      ['Sincronia', desync],
+      ['Audio', (actx ? actx.state : 'assente') + ', ' + aDiag.kb.toFixed(0) + ' KB, ' + aDiag.blk + ' blocchi, ' + aDiag.sched + ' in coda' +
+                (aDiag.err ? ', ' + aDiag.err + ' errori' : '') + (audioHold.length ? ', in attesa ' + audioHold.length : '')]
+    ]);
   }).catch(function(){});
+}
+// riquadro di diagnostica (impostazione "Diagnostica"): lo stato si calcola
+// sempre (finisce nelle segnalazioni), si mostra solo se attivato
+var diagText = '';
+function diag(rows){
+  diagText = rows.map(function(r){ return r[0] + ': ' + r[1]; }).join(' | ');
+  var hud = document.getElementById('hud');
+  if (!hud || !(cfgNow && cfgNow.DIAG === 1)) return;
+  hud.style.display = 'block';
+  hud.innerHTML = rows.map(function(r){
+    return '<div><b>' + r[0] + '</b>' + String(r[1]).replace(/[<&]/g, function(c){ return c === '<' ? '&lt;' : '&amp;'; }) + '</div>';
+  }).join('');
 }
 // ultime righe del player, mandate con "Segnala un problema"
 var uiRing = [];
@@ -498,8 +513,7 @@ function showVideo(){
   playTimer = setInterval(function(){
     if (userPaused) {
       if (actx && actx.state === 'running') actx.suspend();
-      var hud = document.getElementById('hud');
-      if (hud) hud.textContent = 'pausa, buffer ' + frames.length + ' frame';
+      diag([['Stato', 'in pausa'], ['Video', 'MJPEG, ' + frames.length + ' frame nel browser']]);
       return;
     }
     pollRate();
@@ -1324,8 +1338,7 @@ function hTick(){
   if (userPaused) {
     hs.frozenAt = 0; hs.fpsAt = 0;
     if (actx && actx.state === 'running') actx.suspend();
-    var hud0 = document.getElementById('hud');
-    if (hud0) hud0.textContent = 'pausa, video pronto ' + hAhead().toFixed(0) + ' s';
+    diag([['Stato', 'in pausa'], ['Video', 'H.264, pronto ' + hAhead().toFixed(0) + ' s']]);
     return;
   }
   pollRate();
@@ -1592,7 +1605,7 @@ function clientState(){
   put('posizione', function(){ return Math.round(pos) + ' s su ' + DURATION + ' s' + (IS_LIVE ? ' (live)' : ''); });
   put('stato', function(){ return (userPaused ? 'in pausa' : 'in riproduzione') + (stalled ? ', FERMO per caricamento' : '') + (playing ? '' : ', orologio fermo'); });
   put('messaggio a schermo', function(){ var o = document.getElementById('overlay'); return o.style.display === 'none' ? '-' : (document.getElementById('msg').textContent || '-'); });
-  put('riga in alto', function(){ return document.getElementById('hud').textContent || '-'; });
+  put('diagnostica', function(){ return diagText || '-'; });
   put('velocita\'', function(){ return rateMb ? rateMb.toFixed(2) + ' MB/s' : '-'; });
   put('audio', function(){ return actx ? actx.state + ', ' + aDiag.kb.toFixed(0) + ' KB, ' + aDiag.blk + ' blocchi, errori ' + aDiag.err : 'non avviato'; });
   if (vmode === 'h264' && typeof hs !== 'undefined' && hs) put('video pronto', function(){ return hAhead().toFixed(1) + ' s'; });

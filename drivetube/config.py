@@ -31,6 +31,9 @@ SETTINGS = [
      [(32, "32k"), (48, "48k"), (64, "64k"), (96, "96k"), (128, "128k"), (192, "192k")]),
     ("AUDIO_BUFFER_SEC", "Buffer audio", "Secondi di audio caricati prima di partire.", 4,
      [(2, "2 s"), (4, "4 s"), (8, "8 s"), (15, "15 s")]),
+    ("DIAG", "Diagnostica", "Riquadro in alto a sinistra con lo stato di video, rete e audio, "
+     "per capire cosa succede quando qualcosa non va.", 0,
+     [(0, "Nascosta"), (1, "Visibile")]),
 ]
 
 
