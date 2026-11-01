@@ -134,6 +134,92 @@ def cookie_hdr(name, value, max_age=31536000, strict=False):
 HTML_PATHS = {"/", "/index.html", "/home", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
 
 
+
+# ---- home: la griglia mescolata (ricerche recenti, suggeriti, feed, canali) ----
+_more_pool = ThreadPoolExecutor(max_workers=4)
+_more_jobs = {}          # (sessione, ricerca) -> (quando, future)
+_more_lock = threading.Lock()
+
+
+def home_more_html(q, recent, here):
+    t0 = time.time()
+    seen = set()
+    found_channels = []  # (cid, name)
+    shown_q = []
+    for query in recent:
+        if query != q and query not in shown_q and len(shown_q) < 6:
+            shown_q.append(query)
+    show_personal = use_cookies() and home_feed() == "personal"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        # la ricerca appena fatta va in parallelo con il resto (la pagina la sta
+        # facendo adesso: la cache la fa fare una volta sola)
+        q_future = pool.submit(in_session(search_yt), q) if q else None
+        search_futures = {query: pool.submit(in_session(search_yt), query) for query in shown_q}
+        related_future = pool.submit(in_session(related_of), here) if here else None
+        account_future = pool.submit(in_session(account_sections)) if show_personal else None
+    for vid, title, kind, url in (q_future.result() if q_future else []):
+        if kind == "channel":
+            found_channels.append((url or vid, title))
+        else:
+            seen.add(vid)
+    # tutto mescolato a turno, cosi' i suggeriti finiscono in mezzo agli altri video
+    sources = []
+    if here and related_future:
+        sources.append(related_future.result())
+    for query in shown_q:
+        rows = []
+        for vid, title, kind, url in search_futures[query].result():
+            if kind == "channel":
+                found_channels.append((url or vid, title))
+            else:
+                rows.append((vid, title))
+        sources.append(rows)
+    if found_channels:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            ch_futs = [pool.submit(in_session(channel_videos), cid, cname)
+                       for cid, cname in found_channels[:4]]
+        for fut in ch_futs:
+            try:
+                sources.append(fut.result()[:12])
+            except Exception:
+                pass
+    for name, rows in (account_future.result() if account_future else []):
+        sources.append(rows)
+    mixed = []
+    for i in range(max([len(s) for s in sources] or [0])):
+        for s in sources:
+            if i < len(s):
+                mixed.append(s[i])
+    out = []
+    if mixed:
+        if q:
+            out.append("<h2>Per te</h2>")
+        out.extend(cards(mixed, seen, here))
+    elif not q:
+        out.append('<p style="grid-column:1/-1">nessuna ricerca recente</p>')
+    print("home: suggerimenti in %.1f s (%d video)" % (time.time() - t0, len(mixed)), flush=True)
+    return "".join(out)
+
+
+def home_more_start(sid, q, recent, here):
+    """Comincia la griglia in background mentre la pagina fa la ricerca."""
+    now = time.time()
+    with _more_lock:
+        for k in [k for k, v in _more_jobs.items() if now - v[0] > 120]:
+            _more_jobs.pop(k, None)
+        _more_jobs[(sid, q)] = (now, _more_pool.submit(in_session(home_more_html), q, list(recent), here))
+
+
+def home_more_get(sid, q, recent, here):
+    with _more_lock:
+        job = _more_jobs.pop((sid, q), None)
+    if job:
+        try:
+            return job[1].result(timeout=150)
+        except Exception as e:
+            print("home: suggerimenti non riusciti:", e, flush=True)
+    return home_more_html(q, recent, here)
+
 class Handler(BaseHTTPRequestHandler):
     def end_headers(self):
         for k, v in getattr(self, "_extra", []):
@@ -225,87 +311,59 @@ class Handler(BaseHTTPRequestHandler):
             print("GET", path, flush=True)
 
         if path == "/home":
+            # la pagina arriva subito con la ricerca appena fatta; la griglia mescolata
+            # (ricerche recenti, suggeriti, feed, canali) la chiede la pagina a /home/more
+            t0 = time.time()
             q = (parse_qs(u.query).get("q") or [""])[0]
             recent = push_recent(q, recent_from_cookie(self.headers.get("Cookie")))
             url_now = cur().url
             here = url_now.split("v=")[-1][:11] if "v=" in url_now else ""
             admin = self.who == "admin"
+            home_more_start(cur().sid, q, recent, here)
             items = []
             seen = set()
-            # collect queries to run in parallel
-            shown_q = []
-            for query in recent:
-                if query == q or query in shown_q:
-                    continue
-                if len(shown_q) >= 6:
-                    break
-                shown_q.append(query)
-            all_queries = ([q] if q else []) + shown_q
-            # ricerche, suggeriti e (con i cookie) account in parallelo, ognuno
-            # nella sessione di chi chiede
-            mine = use_cookies()
-            show_personal = mine and home_feed() == "personal"
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                search_futures = {query: pool.submit(in_session(search_yt), query) for query in all_queries}
-                related_future = pool.submit(in_session(related_of), here) if here else None
-                account_future = pool.submit(in_session(account_sections)) if show_personal else None
-            # La ricerca appena fatta resta in cima, a parte. Tutto il resto
-            # (ricerche recenti, suggeriti, canali, account) viene mescolato a
-            # turno, cosi' i suggeriti finiscono in mezzo agli altri video.
-            found_channels = []  # (cid, name)
             if q:
                 items.append("<h2>Ricerca: %s</h2>" % q.replace("<", ""))
-                for vid, title, kind, url in search_futures[q].result():
+                for vid, title, kind, url in search_yt(q):
                     if kind == "channel":
                         items.append(
                             '<a class="card" href="/channel?id=%s"><span>Canale: %s</span></a>'
                             % (vid, title.replace("<", ""))
                         )
-                        found_channels.append((url or vid, title))
                     else:
                         items.extend(cards([(vid, title)], seen, here))
-            sources = []  # liste di (vid, titolo), da mescolare
-            if here and related_future:
-                sources.append(related_future.result())
-            for query in shown_q:
-                rows = []
-                for vid, title, kind, url in search_futures[query].result():
-                    if kind == "channel":
-                        found_channels.append((url or vid, title))
-                    else:
-                        rows.append((vid, title))
-                sources.append(rows)
-            if found_channels:
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    ch_futs = [pool.submit(in_session(channel_videos), cid, cname)
-                               for cid, cname in found_channels[:4]]
-                for fut in ch_futs:
-                    try:
-                        sources.append(fut.result()[:12])
-                    except Exception:
-                        pass
-            for name, rows in (account_future.result() if account_future else []):
-                sources.append(rows)
-            mixed = []
-            for i in range(max([len(s) for s in sources] or [0])):
-                for s in sources:
-                    if i < len(s):
-                        mixed.append(s[i])
-            if mixed:
-                if q:
-                    items.append("<h2>Per te</h2>")
-                items.extend(cards(mixed, seen, here))
+            items.append(
+                '<p id="more" style="grid-column:1/-1;color:#aaa">carico i suggerimenti...</p>'
+                '<script>(function(){var m=document.getElementById("more");'
+                'fetch("/home/more?q="+encodeURIComponent(%s)).then(function(r){return r.text();}).then(function(h){'
+                'var t=document.createElement("div");t.innerHTML=h;while(t.firstChild)m.parentNode.insertBefore(t.firstChild,m);m.remove();'
+                '}).catch(function(){m.textContent="suggerimenti non disponibili";});})();</script>'
+                % json.dumps(q).replace("</", "<\\/"))
             chips = "".join(
                 '<a class="chip" href="/home?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
             )
             body = HOME_HTML % ('<a class="back" href="/admin" style="background:#333;color:#fff;text-decoration:none;padding:8px 14px;font-size:18px">admin</a>' if admin else "",
-              chips, "".join(items) or "<p>nessuna ricerca recente</p>")
+              chips, "".join(items))
+            print("home: pagina in %.1f s" % (time.time() - t0), flush=True)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Set-Cookie", recent_cookie_header(recent))
             self.end_headers()
             self.wfile.write(body.encode("utf-8"))
+            return
+
+        if path == "/home/more":
+            q = (parse_qs(u.query).get("q") or [""])[0]
+            recent = recent_from_cookie(self.headers.get("Cookie"))
+            url_now = cur().url
+            here = url_now.split("v=")[-1][:11] if "v=" in url_now else ""
+            body = home_more_get(cur().sid, q, recent, here).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/search":

@@ -162,6 +162,14 @@ def browser_cookies():
     text, kept, dropped = cookies_youtube_only(_netscape(res.get("cookies") or []))
     if not kept:
         raise RuntimeError("YouTube non ha dato cookie (passi: %s)" % ", ".join(res.get("steps", [])))
+    # i cookie di un account valgono piu' di quelli da visitatore: non li si sostituisce
+    try:
+        with open(COOKIES, encoding="utf-8", errors="replace") as f:
+            if _has_account(_account_names(f.read())):
+                raise RuntimeError("ci sono gia' i cookie di un account: quelli da visitatore non li sostituiscono "
+                                   "(per ricominciare da zero cancella prima i cookie)")
+    except OSError:
+        pass
     cookies_write(text)
     _step("salvati %d cookie, ora provo un video con yt-dlp" % kept)
     COOKIE_CHECK.update(t=time.time(), ok=None, msg="cookie da visitatore presi dal browser")

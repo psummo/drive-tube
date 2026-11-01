@@ -291,6 +291,10 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.17
+- **Faster home page**: the page now arrives as soon as the search you typed is ready, and the mixed grid (recent searches, suggestions, personal feed, channels) is prepared in the background at the same time and fills in right after, instead of the page waiting for a dozen yt-dlp runs in two rounds. Lists already loaded are shown at once even when older than 10 minutes and refreshed in the background for next time; identical requests at the same moment share one yt-dlp run; subscriptions take one run instead of three. In a test with a 2-second yt-dlp and an empty cache, the page appears after 2.1 s instead of 4.6 s. The log shows how long the page and the suggestions took.
+- The visitor-cookie button no longer replaces account cookies.
+
 ### 15.16
 - **Google sign-in in the server's browser**: from the admin page you can sign in to a (secondary) Google account inside the server's Chromium, seeing its screen and clicking/typing into it. The account's cookies are then saved for yt-dlp and renewed automatically every 6 hours and whenever they expire, by the same browser profile and from the same address as yt-dlp, carrying over the cookies yt-dlp rotated. The password is never stored or logged.
 

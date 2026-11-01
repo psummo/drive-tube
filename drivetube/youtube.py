@@ -195,11 +195,66 @@ def run_yt(*args, net=None, cookies=None, **kw):
             cookie_checkin(original, path)
 
 
-def search_yt(q):
-    ck = ("s", q, use_cookies())
-    hit = feed_cache.get(ck)
-    if hit and time.time() - hit[0] < 600:
+# ---- cache degli elenchi: si risponde subito, si aggiorna dietro le quinte ----
+# Un elenco gia' caricato (ricerca, feed, canale, suggeriti) si mostra subito anche
+# se ha piu' di 10 minuti, e intanto lo si ricarica in background per la volta
+# dopo: la home non aspetta piu' yt-dlp per cose che ha gia' visto.
+LIST_TTL = 600            # dopo 10 minuti un elenco si ricarica (in background)
+LIST_KEEP = 24 * 3600     # oltre un giorno non lo si mostra piu'
+_swr_pool = ThreadPoolExecutor(max_workers=3)
+_swr_busy = set()
+_swr_lock = threading.Lock()
+_inflight = {}            # elenchi in caricamento adesso: chi arriva dopo aspetta quello
+
+
+def cached_list(key, fn, *args):
+    now = time.time()
+    hit = feed_cache.get(key)
+    if hit and now - hit[0] < LIST_TTL:
         return hit[1]
+    if hit and hit[1] and now - hit[0] < LIST_KEEP:
+        with _swr_lock:
+            busy = key in _swr_busy
+            _swr_busy.add(key)
+        if not busy:
+            def refresh():
+                try:
+                    rows = fn(*args)
+                    if rows:
+                        feed_cache[key] = (time.time(), rows)
+                except Exception as e:
+                    print("aggiornamento elenco non riuscito:", e, flush=True)
+                finally:
+                    with _swr_lock:
+                        _swr_busy.discard(key)
+            _swr_pool.submit(in_session(refresh))
+        return hit[1]
+    with _swr_lock:
+        ev = _inflight.get(key)
+        owner = ev is None
+        if owner:
+            ev = _inflight[key] = threading.Event()
+    if not owner:
+        # la stessa richiesta e' gia' partita (es. pagina e griglia della home insieme)
+        ev.wait(180)
+        hit = feed_cache.get(key)
+        return hit[1] if hit else []
+    try:
+        rows = fn(*args)
+        # un elenco vuoto (errore, blocco) si riprova dopo un minuto, non dopo 10
+        feed_cache[key] = (time.time() if rows else time.time() - LIST_TTL + 60, rows)
+        return rows
+    finally:
+        with _swr_lock:
+            _inflight.pop(key, None)
+        ev.set()
+
+
+def search_yt(q):
+    return cached_list(("s", q, use_cookies()), _search_fetch, q)
+
+
+def _search_fetch(q):
     p = run_yt('--flat-playlist', '--print', '%(id)s\t%(title)s\t%(channel_id)s\t%(url)s', 'ytsearch16:' + q,
         text=True, capture_output=True,
     )
@@ -212,16 +267,15 @@ def search_yt(q):
         url = parts[3].strip() if len(parts) > 3 else ''
         kind = 'channel' if vid.startswith('UC') or '/channel/' in url or '/@' in url else 'video'
         rows.append((vid, title, kind, url))
-    feed_cache[ck] = (time.time(), rows)
     return rows
 
 
 def flat_rows(url, limit=8, start=1):
     end = start + limit - 1
-    key = (url, start, end, use_cookies())
-    hit = feed_cache.get(key)
-    if hit and time.time() - hit[0] < 600:
-        return hit[1]
+    return cached_list((url, start, end, use_cookies()), _flat_fetch, url, start, end)
+
+
+def _flat_fetch(url, start, end):
     try:
         p = run_yt(
                 "--flat-playlist",
@@ -243,7 +297,6 @@ def flat_rows(url, limit=8, start=1):
         if len(vid) != 11:
             continue
         rows.append((vid, title.strip()))
-    feed_cache[key] = (time.time(), rows)
     if not rows:
         err = (p.stderr or "")[-200:]
         print("elenco vuoto:", err, flush=True)
@@ -333,10 +386,10 @@ def related_of(vid):
     # la ricerca invece passa. Cerchiamo video simili dal canale e dal titolo.
     if not vid:
         return []
-    ck = ("r", vid, use_cookies())
-    hit = feed_cache.get(ck)
-    if hit and time.time() - hit[0] < 600:
-        return hit[1]
+    return cached_list(("r", vid, use_cookies()), _related_fetch, vid)
+
+
+def _related_fetch(vid):
     title, chan = video_meta(vid)
     seen = {vid}
     rows = []
@@ -344,15 +397,12 @@ def related_of(vid):
         rows += videos_from_search(query, seen, 12 - len(rows))
         if len(rows) >= 12:
             break
-    feed_cache[ck] = (time.time(), rows)
     return rows
 
 
 def account_sections():
     jobs = [
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 1, 15),
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 16, 15),
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 31, 15),
+        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 1, 45),
         ("Più tardi", "https://www.youtube.com/playlist?list=WL", 1, 12),
         ("Mi piace", "https://www.youtube.com/playlist?list=LL", 1, 12),
     ]
