@@ -64,20 +64,88 @@ def ytdlp_full_install():
     return v
 
 
+# ---- curl_cffi per drive-tube stesso (elenchi delle dirette di Kick) ----
+# Le pagine di Kick con l'elenco delle dirette e delle categorie stanno dietro
+# Cloudflare come i video: anche drive-tube deve presentarsi come un browser. I
+# pacchetti (curl_cffi, cffi, certifi) si scaricano da PyPI gia' compilati e si
+# estraggono in una cartella privata: niente pip, niente sudo.
+PYLIB = os.path.expanduser("~/.local/share/drive-tube/pylib")
+CURL_CFFI_VERSION = "0.17.0"     # tra le versioni che anche yt-dlp accetta
+
+
+def _wheel_ok(fn, pyver, arch):
+    if not fn.endswith(".whl"):
+        return False
+    parts = fn[:-4].split("-")
+    if len(parts) < 5:
+        return False
+    py, abi, plat = parts[-3], parts[-2], parts[-1]
+    if plat == "any":
+        return True
+    if arch not in plat or "manylinux" not in plat:
+        return False
+    if abi == "abi3":
+        return py.startswith("cp3") and int(py[3:] or 0) <= pyver
+    return py == "cp3%d" % pyver and abi == py     # non le versioni "t" (Python senza GIL)
+
+
+def pylib_install():
+    import io
+    import platform
+    import zipfile
+    arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
+    pyver = sys.version_info[1]
+    tmp = PYLIB + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    for name, ver in (("curl-cffi", CURL_CFFI_VERSION), ("cffi", ""), ("certifi", ""), ("pycparser", "")):
+        url = "https://pypi.org/pypi/%s/%sjson" % (name, ver + "/" if ver else "")
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "drive-tube"}), timeout=30) as r:
+            meta = json.load(r)
+        files = [u for u in meta.get("urls", []) if _wheel_ok(u["filename"], pyver, arch)]
+        if not files:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError("%s: nessun pacchetto pronto per Python 3.%d su %s" % (name, pyver, arch))
+        u = files[0]
+        with urllib.request.urlopen(u["url"], timeout=120) as r:
+            data = r.read()
+        if hashlib.sha256(data).hexdigest() != u.get("digests", {}).get("sha256"):
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError("%s: file scaricato non integro" % name)
+        zipfile.ZipFile(io.BytesIO(data)).extractall(tmp)
+    p = subprocess.run([sys.executable, "-c", "import curl_cffi; print(curl_cffi.__version__)"],
+                       env=dict(os.environ, PYTHONPATH=tmp), capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError("curl_cffi non si carica: " + (p.stderr or "").strip()[-200:])
+    shutil.rmtree(PYLIB, ignore_errors=True)
+    os.replace(tmp, PYLIB)
+    return p.stdout.strip()
+
+
+def pylib_ready():
+    return os.path.isdir(os.path.join(PYLIB, "curl_cffi"))
+
+
 def ytdlp_full_start():
-    """Installazione in background (la prima volta che si apre Kick)."""
-    if _full_job["busy"] or ytdlp_full_bin():
+    """Preparazione di Kick in background (la prima volta che lo si apre):
+    yt-dlp completo per i video, curl_cffi per gli elenchi."""
+    if _full_job["busy"] or (ytdlp_full_bin() and pylib_ready()):
         return
     _full_job["busy"] = True
     _full_job["err"] = ""
 
     def run():
         try:
-            v = ytdlp_full_install()
-            print("yt-dlp completo installato:", v, flush=True)
+            if not ytdlp_full_bin():
+                v = ytdlp_full_install()
+                print("yt-dlp completo installato:", v, flush=True)
+            if not pylib_ready() and not IS_TERMUX:
+                v = pylib_install()
+                print("curl_cffi installato:", v, flush=True)
         except Exception as e:
             _full_job["err"] = str(e)[:200]
-            print("yt-dlp completo non installato:", e, flush=True)
+            print("preparazione di Kick non riuscita:", e, flush=True)
         finally:
             _full_job["busy"] = False
     import threading
@@ -87,7 +155,7 @@ def ytdlp_full_start():
 def ytdlp_full_state():
     b = ytdlp_full_bin()
     return {"installed": bool(b), "busy": _full_job["busy"], "err": _full_job["err"],
-            "version": tool_version([b, "--version"]) if b else ""}
+            "version": tool_version([b, "--version"]) if b else "", "curl_cffi": pylib_ready()}
 
 
 def tool_version(cmd):

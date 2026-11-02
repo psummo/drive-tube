@@ -53,7 +53,7 @@ from .access import (
     use_cookies,
     who_is,
 )
-from .tools import ytdlp_full_install, ytdlp_full_state, ytdlp_status, ytdlp_update
+from .tools import pylib_install, ytdlp_full_install, ytdlp_full_state, ytdlp_status, ytdlp_update
 from .youtube import (
     run_yt,
     COOKIE_CHECK,
@@ -93,7 +93,7 @@ from .player import (
     stop_all,
     yt_here,
 )
-from . import live, raiplay
+from . import explore, live, raiplay
 from .streamers import KICK, PLATFORMS, TWITCH
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
@@ -224,6 +224,14 @@ def home_more_get(sid, q, recent, here):
         except Exception as e:
             print("home: suggerimenti non riusciti:", e, flush=True)
     return home_more_html(q, recent, here)
+
+def viewers(n):
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return ""
+    return "%.1fk" % (n / 1000.0) if n >= 1000 else str(n)
+
 
 class Handler(BaseHTTPRequestHandler):
     def end_headers(self):
@@ -905,7 +913,10 @@ class Handler(BaseHTTPRequestHandler):
                 favs.remove(drop)
             self.send_response(302)
             self.send_header("Set-Cookie", cookie_hdr(plat.cookie, plat.favs_cookie(favs)))
-            self.send_header("Location", ("%s?c=%s" % (plat.path, add)) if add else plat.path)
+            ret = (q.get("ret") or [""])[0]
+            if not (ret.startswith(plat.path + "?") or ret == plat.path):
+                ret = ("%s?c=%s" % (plat.path, add)) if add else plat.path
+            self.send_header("Location", ret)
             self.end_headers()
             return
         host = plat.live_url("x")[:-2].split("://", 1)[1]
@@ -945,13 +956,81 @@ class Handler(BaseHTTPRequestHandler):
                          '<a class="x" href="%s?del=%s" title="togli">&times;</a></div>'
                          % (n, plat.path, n, ('src="%s"' % pic) if pic else "", n, plat.path, n))
             body += "</div>"
-        elif not ch:
-            body += '<p class="note">Aggiungi i canali che segui: restano salvati in questo browser.</p>'
+        if not ch:
+            body += self.explore_html(plat, q, favs)
         page = with_nav(STREAMERS_HTML, plat.live_key if plat is not TWITCH else "tw", self.who == "admin")
         for k, v in (("__LABEL__", plat.name), ("__COLOR__", plat.color), ("__PATH__", plat.path),
                      ("__HOST__", host), ("__LIVEKEY__", plat.live_key), ("__BODY__", body)):
             page = page.replace(k, v)
         self.html_out(page)
+
+    def explore_html(self, plat, q, favs):
+        """Dirette disponibili adesso: filtri per lingua e categoria, griglia delle dirette."""
+        esc = html.escape
+        hdr = self.headers.get("Cookie")
+        lang = (q.get("lang") or [cookie_value(hdr, "dt_xlang") or "it"])[0]
+        lang = lang if lang in ("it", "all") else "it"
+        if q.get("lang"):
+            self.add_header("Set-Cookie", cookie_hdr("dt_xlang", lang))
+        cat = (q.get("cat") or [""])[0]
+        cat = cat if re.match(r"^[a-z0-9-]{1,80}$", cat) else ""
+        all_cats = bool(q.get("cats"))
+
+        def link(**kw):
+            d = {"cat": cat, "lang": lang}
+            d.update(kw)
+            return plat.path + "?" + "&".join("%s=%s" % (k, quote(str(v))) for k, v in d.items() if v)
+
+        out = ['<h2>In diretta ora</h2><div class="chips">']
+        out.append('<a href="%s"%s>Italiano</a><a href="%s"%s>Tutte le lingue</a><span class="sep"></span>' % (
+            esc(link(lang="it")), ' class="on"' if lang == "it" else "",
+            esc(link(lang="all")), ' class="on"' if lang == "all" else ""))
+        try:
+            cats = explore.categories(plat.live_key)
+        except Exception as e:
+            cats = []
+            print("%s, categorie:" % plat.name, e, flush=True)
+        out.append('<a href="%s"%s>Tutte</a>' % (esc(link(cat="")), ' class="on"' if not cat else ""))
+        shown = cats[:14]
+        if cat and cat not in [c["slug"] for c in shown]:
+            hit = [c for c in cats if c["slug"] == cat] or [{"slug": cat, "name": cat.replace("-", " ").capitalize()}]
+            shown = hit[:1] + shown
+        for c in shown:
+            out.append('<a href="%s"%s>%s</a>' % (esc(link(cat=c["slug"])), ' class="on"' if c["slug"] == cat else "",
+                                                 esc(c["name"])))
+        if len(cats) > 14:
+            out.append('<a href="%s">altre categorie&hellip;</a>' % esc(link(cats=1)))
+        out.append("</div>")
+        if all_cats:
+            out.append('<div class="cats">')
+            for c in cats:
+                pic = '<img src="%s" alt="" loading="lazy">' % esc(c["img"]) if c.get("img") else ""
+                out.append('<a class="cat" href="%s">%s<span>%s</span></a>' % (esc(link(cat=c["slug"])), pic, esc(c["name"])))
+            out.append("</div>")
+            return "".join(out)
+        try:
+            rows = explore.streams(plat.live_key, cat, "" if lang == "all" else lang)
+        except Exception as e:
+            out.append('<p class="note" style="color:#fca5a5">Elenco delle dirette non disponibile: %s</p>' % esc(str(e)[:200]))
+            return "".join(out)
+        if not rows:
+            out.append('<p class="note">Nessuna diretta%s in questo momento.</p>' % (" in italiano" if lang == "it" else ""))
+            return "".join(out)
+        out.append('<div class="grid">')
+        here = link()
+        for r in rows:
+            fav = r["ch"] in favs
+            pic = 'src="%s"' % esc(r["thumb"]) if r["thumb"] else ""
+            out.append(
+                '<div class="card live"><a class="go" href="/watch?v=%s.%s"><img %s alt="" loading="lazy">'
+                '<div class="t"><b>%s</b><small>%s</small><small class="cat">%s</small></div></a>'
+                '<span class="badge">&#9679; %s</span>%s</div>'
+                % (plat.live_key, quote(r["ch"]), pic, esc(r["name"]), esc(r["title"]) or "&nbsp;", esc(r["cat"]),
+                   viewers(r["viewers"]),
+                   "" if fav else '<a class="x add" href="%s?add=%s&ret=%s" title="aggiungi ai preferiti">+</a>'
+                   % (plat.path, quote(r["ch"]), quote(here))))
+        out.append("</div>")
+        return "".join(out)
 
     def raiplay_page(self, q):
         """RaiPlay: home (dirette, generi, blocchi), ricerca, genere, programma, episodi."""
@@ -1347,10 +1426,12 @@ class Handler(BaseHTTPRequestHandler):
         if what == "ytdlp/full":
             try:
                 v = ytdlp_full_install()
+                if not IS_TERMUX:
+                    v += ", curl_cffi " + pylib_install()
             except Exception as e:
                 self.json_out({"ok": False, "error": str(e)[:300]}, 500)
                 return
-            _bprint("yt-dlp completo installato:", v, flush=True)
+            _bprint("Kick pronto: yt-dlp completo", v, flush=True)
             self.json_out({"ok": True, "version": v})
             return
         if what == "ytdlp/update":

@@ -303,7 +303,7 @@ function loadYtdlp(force){
     $('tools').textContent = 'in uso: ' + j.path + ' · ' + j.ffmpeg + ' · JavaScript: ' + j.js;
     var f = j.full || {};
     $('fulltxt').textContent = 'yt-dlp completo (per Kick): ' + (f.busy ? 'installazione in corso...' :
-      f.installed ? 'installato ' + f.version : 'non installato' + (f.err ? ' - ' + f.err : ''));
+      f.installed ? 'installato ' + f.version + (f.curl_cffi ? ', curl_cffi pronto' : ', manca curl_cffi (elenchi delle dirette)') : 'non installato' + (f.err ? ' - ' + f.err : ''));
     $('fulltxt').className = f.installed ? 'ok' : 'na';
     $('fullbtn').disabled = !!f.busy;
     $('fullbtn').textContent = f.installed ? 'Aggiorna' : 'Installa';
