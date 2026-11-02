@@ -81,10 +81,10 @@ def yt_net_label(n):
     return t
 
 
-def yt_cmd(*args, net=None, cookie_file=None):
+def yt_cmd(*args, net=None, cookie_file=None, binary=None):
     """Comando yt-dlp con la rete scelta in admin e, se dato, un file di cookie.
     Per lanciarlo usare run_yt(), che gestisce i cookie in modo sicuro."""
-    cmd = [ytdlp_bin()]
+    cmd = [binary or ytdlp_bin()]
     if cookie_file:
         cmd += ["--cookies", cookie_file]
     cmd += yt_net(net)
@@ -178,7 +178,7 @@ def cookie_checkin(original, path):
         print("cookie YouTube aggiornati da YouTube e salvati (%d valori finora)" % _ck_stats["merged"], flush=True)
 
 
-def run_yt(*args, net=None, cookies=None, **kw):
+def run_yt(*args, net=None, cookies=None, binary=None, **kw):
     """Lancia yt-dlp (come subprocess.run). cookies=None: decide la sessione
     (use_cookies); True/False: forza (per la verifica in admin)."""
     want = use_cookies() if cookies is None else bool(cookies)
@@ -189,7 +189,7 @@ def run_yt(*args, net=None, cookies=None, **kw):
         except OSError as e:
             print("cookie non leggibili:", e, flush=True)
     try:
-        return subprocess.run(yt_cmd(*args, net=net, cookie_file=path), **kw)
+        return subprocess.run(yt_cmd(*args, net=net, cookie_file=path, binary=binary), **kw)
     finally:
         if path:
             cookie_checkin(original, path)

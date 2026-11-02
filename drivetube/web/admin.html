@@ -57,6 +57,10 @@ small{color:#999}
   <span id="ytdtxt" class="na">yt-dlp: controllo...</span>
   <button id="ytdbtn" disabled>Aggiorna yt-dlp</button>
 </div>
+<div class="row">
+  <span id="fulltxt" class="na">yt-dlp completo (per Kick): controllo...</span>
+  <button id="fullbtn" disabled>Installa</button>
+</div>
 <div class="row"><small id="tools"></small></div>
 <div class="row"><small id="addrs"></small></div>
 
@@ -297,6 +301,12 @@ function loadYtdlp(force){
     $('ytdbtn').textContent = j.newer ? 'Aggiorna yt-dlp' : 'Controlla di nuovo';
     $('ytdbtn').setAttribute('data-mode', j.newer ? 'update' : 'check');
     $('tools').textContent = 'in uso: ' + j.path + ' · ' + j.ffmpeg + ' · JavaScript: ' + j.js;
+    var f = j.full || {};
+    $('fulltxt').textContent = 'yt-dlp completo (per Kick): ' + (f.busy ? 'installazione in corso...' :
+      f.installed ? 'installato ' + f.version : 'non installato' + (f.err ? ' - ' + f.err : ''));
+    $('fulltxt').className = f.installed ? 'ok' : 'na';
+    $('fullbtn').disabled = !!f.busy;
+    $('fullbtn').textContent = f.installed ? 'Aggiorna' : 'Installa';
   });
 }
 $('ytdbtn').onclick = function(){
@@ -307,6 +317,14 @@ $('ytdbtn').onclick = function(){
   api('ytdlp/update', {}).then(function(j){
     if (!j.ok) { say('aggiornamento yt-dlp fallito: ' + j.error, true); btn.disabled = false; return; }
     say('yt-dlp aggiornato a ' + j.version);
+    loadYtdlp(false);
+  });
+};
+$('fullbtn').onclick = function(){
+  $('fullbtn').disabled = true;
+  $('fulltxt').textContent = 'scarico yt-dlp completo (circa 35 MB)...';
+  api('ytdlp/full', {}).then(function(j){
+    say(j.ok ? 'yt-dlp completo: ' + j.version : 'yt-dlp completo non installato: ' + j.error, !j.ok);
     loadYtdlp(false);
   });
 };

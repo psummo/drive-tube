@@ -33,7 +33,8 @@ from .youtube import (
     video_info,
 )
 from .chunkproxy import px_forbidden, px_url
-from . import live, twitch
+from . import generic, live, raiplay
+from .streamers import by_key
 from .sources import resolve
 from .media import (
     ensure_fifo,
@@ -49,6 +50,10 @@ from .media import (
 
 def kind():
     return (cur().src or {}).get("kind", "yt")
+
+
+def platform():
+    return by_key((cur().src or {}).get("plat", ""))[0]
 
 
 def yt_here():
@@ -162,12 +167,16 @@ def next_of_current():
         out = [r for r in order if r.get("geo") == geo] or order
         return [{"href": "/watch?v=tv.%s.%s" % (src["list"], r["key"]), "title": r["name"], "thumb": r["logo"]}
                 for r in out[:12]]
-    if src.get("kind") == "twitch":
-        name = src.get("channel")
-        if not name:
+    if src.get("kind") == "stream":
+        plat, name = platform(), src.get("channel")
+        if not plat or not name:
             return []
-        return [{"href": "/watch?v=twv." + vid, "title": title, "thumb": ""}
-                for vid, title, dur in twitch.vods(name)[:8]]
+        return [{"href": "/watch?v=%s.%s" % (plat.vod_key, vid), "title": title, "thumb": ""}
+                for vid, title, dur in plat.vods(name)[:8]]
+    if src.get("kind") == "rai":
+        return [{"href": "/watch?v=" + raiplay.video_key(r["path"]),
+                 "title": r["title"] + (" - " + r["sub"] if r["sub"] else ""), "thumb": r["img"]}
+                for r in raiplay.next_after(src.get("rai_path", ""))]
     return [{"href": "/watch?v=" + x["id"], "title": x["title"],
              "thumb": "https://i.ytimg.com/vi/%s/hqdefault.jpg" % x["id"], "id": x["id"]}
             for x in _yt_next()]
@@ -199,7 +208,12 @@ def fetch_duration():
         return
     if kind() == "m3u":
         return  # canale TV: sempre in diretta, nome dalla lista
-    info = video_info(url)
+    if kind() == "stream":
+        info = platform().info(url)
+    elif kind() == "rai":
+        info = generic.info(url)
+    else:
+        info = video_info(url)
     if cur().url != url or info is None:
         return  # nel frattempo e' stato aperto un altro video, o yt-dlp non ha risposto
     if info["title"]:
@@ -245,11 +259,15 @@ def ytdlp_urls(net=None, quiet=False):
         except live.LiveError as e:
             state["err"] = str(e)
             raise RuntimeError(state["err"])
-    if k == "twitch":
+    if k in ("stream", "rai"):
+        max_h = h264_height() if state["vmode"] == "h264" else 720
+        label = platform().name if k == "stream" else "RaiPlay"
         try:
-            return twitch.stream_urls(cur().url, h264_height() if state["vmode"] == "h264" else 720)
+            if k == "stream":
+                return platform().stream_urls(cur().url, max_h)
+            return generic.stream_urls(cur().url, max_h)
         except StreamError as e:
-            state["err"] = ("Twitch: " + str(e)) if e.kind == "none" else "Twitch: stream non disponibile (%s)" % e
+            state["err"] = "%s: %s" % (label, e)
             raise RuntimeError(state["err"])
     try:
         return stream_urls(cur().url, ytdlp_format(), net)

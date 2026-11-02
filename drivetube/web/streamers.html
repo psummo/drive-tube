@@ -1,12 +1,12 @@
 <!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Twitch</title>
+<title>__LABEL__</title>
 <style>
 body{background:#111;color:#fff;font-family:sans-serif;margin:0}
 __NAVCSS__
 main{padding:0 12px 24px}
 form{display:flex;gap:8px;padding:12px 0}
 form input{flex:1;font-size:18px;padding:10px;border-radius:10px;border:0;background:#222;color:#fff}
-form button{font-size:18px;padding:10px 16px;border:0;border-radius:10px;background:#7c3aed;color:#fff}
+form button{font-size:18px;padding:10px 16px;border:0;border-radius:10px;background:__COLOR__;color:#fff}
 h2{font-size:17px;margin:18px 0 8px}
 .note{color:#aaa;font-size:14px;line-height:1.4}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
@@ -27,24 +27,25 @@ h2{font-size:17px;margin:18px 0 8px}
 </style></head><body>
 __NAV__
 <main>
-<form action="/twitch"><input name="add" placeholder="aggiungi un canale (nome o link twitch.tv/...)" autocomplete="off"><button>aggiungi</button></form>
+<form action="__PATH__"><input name="add" placeholder="aggiungi un canale (nome o link __HOST__/...)" autocomplete="off"><button>aggiungi</button></form>
 __BODY__
 </main>
 <script>
 (function(){
   var cards = document.querySelectorAll('.card[data-c]');
   if (!cards.length) return;
-  fetch('/twitch/status').then(function(r){ return r.json(); }).then(function(st){
+  fetch('__PATH__/status').then(function(r){ return r.json(); }).then(function(st){
     for (var i = 0; i < cards.length; i++) {
       var c = cards[i], n = c.getAttribute('data-c'), s = st[n] || {};
       var b = c.querySelector('.badge'), go = c.querySelector('a.go'), sm = c.querySelector('small');
       if (s.live) {
         c.className = 'card live'; b.textContent = 'LIVE';
-        go.href = '/watch?v=tw.' + n;
+        go.href = '/watch?v=__LIVEKEY__.' + n;
+        var im = c.querySelector('img'); if (s.thumb && im && im.getAttribute('src') !== s.thumb) im.src = s.thumb;
         if (s.title) sm.textContent = s.title;
       } else {
         c.className = 'card off'; b.textContent = 'offline';
-        go.href = '/twitch?c=' + n;
+        go.href = '__PATH__?c=' + n;
         sm.textContent = 'non in diretta: tocca per i video salvati';
       }
     }

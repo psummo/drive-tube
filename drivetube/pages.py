@@ -47,7 +47,8 @@ SEARCH_HTML = page("search.html").rstrip("\n")
 CHANNEL_HTML = page("channel.html").rstrip("\n")
 LANDING_HTML = page("landing.html")
 LIVE_HTML = page("live.html")
-TWITCH_HTML = page("twitch.html")
+STREAMERS_HTML = page("streamers.html")
+RAIPLAY_HTML = page("raiplay.html")
 
 # barra in alto delle pagine di scelta (home, TV, YouTube, Twitch)
 NAV_CSS = (".nav{display:flex;gap:6px;align-items:center;padding:10px 12px;background:#000;position:sticky;top:0;z-index:5;overflow-x:auto}"
@@ -57,7 +58,7 @@ NAV_CSS = (".nav{display:flex;gap:6px;align-items:center;padding:10px 12px;backg
 
 def nav(active, admin=False):
     items = [("home", "/home", "&#8962; Home"), ("live", "/live", "TV"), ("yt", "/youtube", "YouTube"),
-             ("tw", "/twitch", "Twitch")]
+             ("rai", "/raiplay", "RaiPlay"), ("tw", "/twitch", "Twitch"), ("k", "/kick", "Kick")]
     out = ['<nav class="nav">']
     for k, href, label in items:
         out.append('<a href="%s"%s>%s</a>' % (href, ' class="on"' if k == active else "", label))

@@ -53,7 +53,7 @@ from .access import (
     use_cookies,
     who_is,
 )
-from .tools import ytdlp_status, ytdlp_update
+from .tools import ytdlp_full_install, ytdlp_full_state, ytdlp_status, ytdlp_update
 from .youtube import (
     run_yt,
     COOKIE_CHECK,
@@ -93,7 +93,8 @@ from .player import (
     stop_all,
     yt_here,
 )
-from . import live, twitch
+from . import live, raiplay
+from .streamers import KICK, PLATFORMS, TWITCH
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
 from .browser import (
@@ -112,7 +113,7 @@ from .browser import (
     login_type,
     refresh_supervisor,
 )
-from .pages import LANDING_HTML, LIVE_HTML, TWITCH_HTML, with_nav
+from .pages import LANDING_HTML, LIVE_HTML, RAIPLAY_HTML, STREAMERS_HTML, with_nav
 from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -135,7 +136,7 @@ def cookie_hdr(name, value, max_age=31536000, strict=False):
 
 
 # pagine HTML (senza accesso si va al login); il resto risponde 401
-HTML_PATHS = {"/", "/index.html", "/home", "/youtube", "/live", "/twitch", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
+HTML_PATHS = {"/", "/index.html", "/home", "/youtube", "/live", "/raiplay", "/twitch", "/kick", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
 
 
 
@@ -326,13 +327,17 @@ class Handler(BaseHTTPRequestHandler):
             self.html_out(self.live_page(q))
             return
 
-        if path == "/twitch":
-            self.twitch_page(q)
-            return
+        for plat in PLATFORMS:
+            if path == plat.path:
+                self.streamer_page(plat, q)
+                return
+            if path == plat.path + "/status":
+                favs = plat.favs_from_cookie(cookie_value(self.headers.get("Cookie"), plat.cookie))
+                self.json_out(plat.live_status(favs))
+                return
 
-        if path == "/twitch/status":
-            favs = twitch.favs_from_cookie(cookie_value(self.headers.get("Cookie"), twitch.COOKIE))
-            self.json_out(twitch.live_status(favs))
+        if path == "/raiplay":
+            self.html_out(self.raiplay_page(q))
             return
 
         if path == "/youtube":
@@ -845,7 +850,7 @@ class Handler(BaseHTTPRequestHandler):
         src = cur().src or {}
         resume = ""
         if cur().url and src.get("watch"):
-            title = state.get("title") or {"m3u": "canale TV", "twitch": "Twitch"}.get(src.get("kind"), "video")
+            title = state.get("title") or {"m3u": "canale TV", "stream": "diretta", "rai": "RaiPlay"}.get(src.get("kind"), "video")
             thumb = src.get("thumb") or ""
             resume = ('<a class="resume" href="/?watch=%s">%s<div><small>Riprendi</small><b>%s</b></div></a>'
                       % (quote(src["watch"]), '<img src="%s" alt="">' % html.escape(thumb) if thumb else "",
@@ -887,58 +892,136 @@ class Handler(BaseHTTPRequestHandler):
             body = "".join(out)
         return with_nav(LIVE_HTML, "live", self.who == "admin").replace("__LISTS__", tabs).replace("__BODY__", body)
 
-    def twitch_page(self, q):
+    def streamer_page(self, plat, q):
+        """Pagina di Twitch o Kick: preferiti, stato, video salvati di un canale."""
         hdr = self.headers.get("Cookie")
-        favs = twitch.favs_from_cookie(cookie_value(hdr, twitch.COOKIE))
-        cookies = []
-        add = twitch.clean_name((q.get("add") or [""])[0])
-        drop = twitch.clean_name((q.get("del") or [""])[0])
+        favs = plat.favs_from_cookie(cookie_value(hdr, plat.cookie))
+        add = plat.clean_name((q.get("add") or [""])[0])
+        drop = plat.clean_name((q.get("del") or [""])[0])
         if add or drop:
             if add and add not in favs:
                 favs.insert(0, add)
             if drop in favs:
                 favs.remove(drop)
-            cookies.append(cookie_hdr(twitch.COOKIE, twitch.favs_cookie(favs)))
-            if add or drop:
-                self.send_response(302)
-                self.send_header("Set-Cookie", cookies[0])
-                self.send_header("Location", "/twitch?c=" + add if add else "/twitch")
-                self.end_headers()
-                return
+            self.send_response(302)
+            self.send_header("Set-Cookie", cookie_hdr(plat.cookie, plat.favs_cookie(favs)))
+            self.send_header("Location", ("%s?c=%s" % (plat.path, add)) if add else plat.path)
+            self.end_headers()
+            return
+        host = plat.live_url("x")[:-2].split("://", 1)[1]
+        body = ""
+        why = plat.ready()
+        if why:
+            body += '<p class="note" style="color:#fc6">%s</p>' % html.escape(why)
         if q.get("add") and not add:
-            body = '<p class="note">Nome non valido: usa il nome del canale come appare in twitch.tv/<b>nome</b>.</p>'
-        else:
-            body = ""
-        ch = twitch.clean_name((q.get("c") or [""])[0])
+            body += '<p class="note">Nome non valido: usa il nome del canale come appare in %s/<b>nome</b>.</p>' % host
+        ch = plat.clean_name((q.get("c") or [""])[0])
         if ch:
-            st = twitch.live_status([ch]).get(ch, {})
-            vods = twitch.vods(ch)
+            st = plat.live_status([ch]).get(ch, {})
+            vods = plat.vods(ch)
             body += '<h2>%s</h2>' % html.escape(ch)
             if st.get("live"):
-                body += ('<a class="btn" href="/watch?v=tw.%s">&#9679; Guarda la diretta</a><p class="note">%s</p>'
-                         % (ch, html.escape(st.get("title") or "")))
-            else:
+                body += ('<a class="btn" href="/watch?v=%s.%s">&#9679; Guarda la diretta</a><p class="note">%s</p>'
+                         % (plat.live_key, ch, html.escape(st.get("title") or "")))
+            elif not why:
                 body += '<p class="note">Non in diretta adesso.</p>'
             if ch not in favs:
-                body += '<p><a class="btn" style="background:#7c3aed" href="/twitch?add=%s">+ aggiungi ai preferiti</a></p>' % ch
+                body += ('<p><a class="btn" style="background:%s" href="%s?add=%s">+ aggiungi ai preferiti</a></p>'
+                         % (plat.color, plat.path, ch))
             if vods:
                 body += "<h2>Video salvati</h2>"
                 for vid, title, dur in vods:
                     d = "%d:%02d:%02d" % (dur // 3600, dur // 60 % 60, dur % 60) if dur else ""
-                    body += '<a class="vod" href="/watch?v=twv.%s"><b>%s</b><small>%s</small></a>' % (vid, html.escape(title), d)
-            else:
-                body += '<p class="note">Nessun video salvato (o Twitch non ha risposto).</p>'
+                    body += ('<a class="vod" href="/watch?v=%s.%s"><b>%s</b><small>%s</small></a>'
+                             % (plat.vod_key, quote(vid, safe="~"), html.escape(title), d))
+            elif not why:
+                body += '<p class="note">Nessun video salvato (o %s non ha risposto).</p>' % plat.name
         if favs:
             body += "<h2>Preferiti</h2><div class=\"grid\">"
             for n in favs:
-                body += ('<div class="card" data-c="%s"><a class="go" href="/twitch?c=%s"><img src="%s" alt="" loading="lazy">'
+                pic = plat.preview(n)
+                body += ('<div class="card" data-c="%s"><a class="go" href="%s?c=%s"><img %s alt="" loading="lazy">'
                          '<div class="t"><b>%s</b><small>controllo...</small></div></a><span class="badge">...</span>'
-                         '<a class="x" href="/twitch?del=%s" title="togli">&times;</a></div>'
-                         % (n, n, twitch.preview(n), n, n))
+                         '<a class="x" href="%s?del=%s" title="togli">&times;</a></div>'
+                         % (n, plat.path, n, ('src="%s"' % pic) if pic else "", n, plat.path, n))
             body += "</div>"
         elif not ch:
             body += '<p class="note">Aggiungi i canali che segui: restano salvati in questo browser.</p>'
-        self.html_out(with_nav(TWITCH_HTML, "tw", self.who == "admin").replace("__BODY__", body), cookies)
+        page = with_nav(STREAMERS_HTML, plat.live_key if plat is not TWITCH else "tw", self.who == "admin")
+        for k, v in (("__LABEL__", plat.name), ("__COLOR__", plat.color), ("__PATH__", plat.path),
+                     ("__HOST__", host), ("__LIVEKEY__", plat.live_key), ("__BODY__", body)):
+            page = page.replace(k, v)
+        self.html_out(page)
+
+    def raiplay_page(self, q):
+        """RaiPlay: home (dirette, generi, blocchi), ricerca, genere, programma, episodi."""
+        qq = (q.get("q") or [""])[0].strip()
+        g = (q.get("g") or [""])[0]
+        prog = raiplay.norm_path((q.get("p") or [""])[0])
+        sel = raiplay.norm_path((q.get("s") or [""])[0])
+        esc = html.escape
+
+        def item(c):
+            if c["kind"] == "video":
+                href = "/watch?v=" + raiplay.video_key(c["path"])
+            elif c["kind"] == "live":
+                if c["path"] not in raiplay.LIVE_IDS:
+                    return ""
+                href = "/watch?v=rail." + c["path"]
+            else:
+                href = "/raiplay?p=" + quote(c["path"])
+            pic = '<img src="%s" alt="" loading="lazy">' % esc(c["img"]) if c["img"] else '<div class="ph">%s</div>' % esc(c["title"][:2].upper())
+            sub = "<small>%s</small>" % esc(c["sub"]) if c["sub"] else ""
+            return '<a class="it%s" href="%s">%s<span>%s%s</span></a>' % (
+                " live" if c["kind"] == "live" else "", href, pic, esc(c["title"]), sub)
+
+        def grid(rows, cls="grid"):
+            return '<div class="%s">%s</div>' % (cls, "".join(item(c) for c in rows))
+
+        chips = '<div class="chips">%s</div>' % "".join(
+            '<a href="/raiplay?g=%s"%s>%s</a>' % (slug, ' class="on"' if slug == g else "", esc(name))
+            for name, slug in raiplay.GENRES)
+        out = []
+        try:
+            if qq:
+                rows = raiplay.search(qq)
+                out.append("<h2>Ricerca: %s</h2>" % esc(qq))
+                out.append(grid(rows) if rows else '<p class="note">Nessun programma con questo nome.</p>')
+            elif g and g in dict((s, n) for n, s in raiplay.GENRES):
+                out.append(chips)
+                for title, rows in raiplay.genre(g):
+                    out.append(("<h2>%s</h2>" % esc(title) if title else "") + grid(rows))
+            elif prog:
+                pr = raiplay.programme(prog)
+                hero = '<h1>%s</h1><div class="hero">%s<p>%s</p></div>' % (
+                    esc(pr["title"]), '<img src="%s" alt="" onerror="this.remove()">' % esc(pr["img"]) if pr["img"] else "", esc(pr["desc"][:600]))
+                out.append(hero)
+                if pr["film"]:
+                    out.append('<a class="btn" href="/watch?v=%s">&#9654; Guarda</a>' % raiplay.video_key(pr["film"]))
+                if pr["sets"]:
+                    cur_set = sel if sel in [p for _, p in pr["sets"]] else pr["sets"][0][1]
+                    if len(pr["sets"]) > 1:
+                        out.append('<div class="chips" style="margin-top:12px">%s</div>' % "".join(
+                            '<a href="/raiplay?p=%s&s=%s"%s>%s</a>' % (quote(prog), quote(sp), ' class="on"' if sp == cur_set else "", esc(n))
+                            for n, sp in pr["sets"]))
+                    eps = raiplay.episodes(cur_set)
+                    out.append(grid(eps) if eps else '<p class="note">Nessun episodio disponibile.</p>')
+                for title, rows in pr["blocks"]:
+                    out.append(("<h2>%s</h2>" % esc(title) if title else "") + grid(rows))
+                if not pr["film"] and not pr["sets"] and not pr["blocks"]:
+                    out.append('<p class="note">Niente da guardare qui.</p>')
+            else:
+                out.append(chips)
+                out.append("<h2>Dirette</h2>" + grid([{"kind": "live", "path": k, "title": n, "sub": "", "img": ""}
+                                                       for n, k in raiplay.LIVES], "row"))
+                for title, rows in raiplay.home()[:14]:
+                    out.append(("<h2>%s</h2>" % esc(title) if title else "") + grid(rows, "row"))
+        except Exception as e:
+            print("raiplay:", e, flush=True)
+            out.append('<p class="note" style="color:#fca5a5">RaiPlay non disponibile: %s</p>' % esc(str(e)[:200]))
+        out.append('<p class="note" style="margin-top:20px">Molti contenuti RaiPlay si vedono solo dall\'Italia; '
+                   'quelli protetti (DRM) non si possono riprodurre.</p>')
+        return with_nav(RAIPLAY_HTML, "rai", self.who == "admin").replace("__Q__", esc(qq)).replace("__BODY__", "".join(out))
 
     # ---------- login ----------
     def page_login(self, msg="", status=200, admin=False):
@@ -1043,7 +1126,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json_out(st)
             return
         if path == "/admin/api/ytdlp":
-            self.json_out(ytdlp_status(force=bool(parse_qs(u.query).get("force"))))
+            self.json_out(dict(ytdlp_status(force=bool(parse_qs(u.query).get("force"))), full=ytdlp_full_state()))
             return
         if path == "/admin/browser/shot":
             try:
@@ -1260,6 +1343,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.json_out({"ok": True, "version": new})
             threading.Thread(target=restart_self, daemon=True).start()
+            return
+        if what == "ytdlp/full":
+            try:
+                v = ytdlp_full_install()
+            except Exception as e:
+                self.json_out({"ok": False, "error": str(e)[:300]}, 500)
+                return
+            _bprint("yt-dlp completo installato:", v, flush=True)
+            self.json_out({"ok": True, "version": v})
             return
         if what == "ytdlp/update":
             try:

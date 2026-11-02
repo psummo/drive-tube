@@ -6,7 +6,7 @@
 >
 > drive-tube is an independent open-source project, provided "as is" without warranty of any kind (see [LICENSE](LICENSE)). It is not affiliated with, endorsed by or connected to Tesla, Google or YouTube. You are responsible for respecting YouTube's terms of service and the rights of content owners.
 
-A lightweight YouTube player for in-car browsers (built for the Tesla browser), so that passengers can keep watching while the car is moving: those browsers block `<video>` and `<audio>` while driving. Besides YouTube it plays **live TV channels from M3U playlists** (free-to-air Italian channels by default) and **Twitch** streams and videos.
+A lightweight YouTube player for in-car browsers (built for the Tesla browser), so that passengers can keep watching while the car is moving: those browsers block `<video>` and `<audio>` while driving. Besides YouTube it plays **live TV channels from M3U playlists** (free-to-air Italian channels by default), **RaiPlay**, and **Twitch** and **Kick** streams and videos.
 
 drive-tube is a small Python server with no dependencies beyond the standard library (see [Code layout](#code-layout)). `yt-dlp` finds the YouTube stream and `ffmpeg` prepares it for the browser, which plays it on a canvas and through the Web Audio API, with no `<video>` or `<audio>` tags. Audio is the master clock and the video follows it.
 
@@ -227,10 +227,11 @@ You need a domain name pointing to the machine (a free [DuckDNS](https://www.duc
 Port and paths can be changed with `YT_HTTPS_PORT`, `YT_CERT` and `YT_KEY`.
 
 ## Home: live TV, YouTube, Twitch
-After login, `/home` shows three tiles, plus *Riprendi* (resume) for whatever was playing. Each section has its own page, and a bar at the top of every page switches between them:
+After login, `/home` shows a tile for each section, plus *Riprendi* (resume) for whatever was playing. Each section has its own page, and a bar at the top of every page switches between them:
 - **`/live`, TV in diretta**: channels from one or more M3U playlists, with their logos and a search box. The player's home button goes back to the channel list, and tapping the video shows the next channels of the same list, for quick zapping.
 - **`/youtube`**: the YouTube home as before (search, recent searches, suggestions, subscriptions). Old `/home?q=...` links still work.
-- **`/twitch`**: add the channels you follow (name or `twitch.tv/...` link); they are stored in a cookie of your browser. The page shows which are live, with Twitch's preview picture; a live channel opens straight in the player, an offline one shows its recent saved videos (VODs). Streams and videos come through yt-dlp.
+- **`/raiplay`**: RaiPlay's home rows, the genres (Italian series, films, international series, programmes, documentaries, kids, teen, sport, music and theatre), search by programme name, a programme's seasons and episodes, and the RaiPlay live channels. The catalogue is read from raiplay.it's public JSON pages, the videos are played through yt-dlp. Tapping the video offers the next episodes of the same season. Much of RaiPlay is visible only from Italy (the player says so instead of showing RaiPlay's "not available" clip), and DRM-protected titles cannot be played.
+- **`/twitch`** and **`/kick`**: add the channels you follow (name or link); they are stored in a cookie of your browser. The page shows which are live, with a preview picture; a live channel opens straight in the player, an offline one shows its recent saved videos (VODs). Streams and videos come through yt-dlp. Kick sits behind Cloudflare, so yt-dlp has to present itself as a real browser, which needs `curl_cffi`: drive-tube downloads the official self-contained yt-dlp build (which includes it) to `~/.local/bin/yt-dlp-full` the first time you open Kick, or from the admin page (*Server*, *yt-dlp completo*). It is used only for Kick and is updated together with yt-dlp. Cloudflare may still refuse requests from some cloud addresses.
 
 ### Live TV playlists
 The playlists are managed in the admin page, section *TV in diretta (liste M3U)*: add any public M3U/M3U8 playlist by URL, remove it, reload it, or go back to the default. The default is the Italian list of the [Free-TV/IPTV](https://github.com/Free-TV/IPTV) project (`playlists/playlist_italy.m3u8`), which collects only free, publicly available streams: Rai, Mediaset, La7, TV8, Nove, Rai News 24 and many local channels. Lists are downloaded by the server, kept in memory and refreshed every 6 hours; `#EXTVLCOPT` user agent/referrer lines and Kodi-style `url|Referer=...` headers are honoured. Only `http`/`https` streams are played.
@@ -269,10 +270,12 @@ Available after login:
 | `drivetube/youtube.py` | **Getting data from YouTube** through yt-dlp: search, channels, personal feed, suggestions, a video's information and its stream URLs. It knows nothing about ffmpeg or the player, so it can be reused on its own. |
 | `drivetube/media.py` | **ffmpeg**: the command line, the FIFO queues, reading MJPEG frames, demuxing H.264 from MPEG-TS, MP3 audio. It knows nothing about YouTube: it gets ready-made URLs. |
 | `drivetube/live.py` | **Live TV**: M3U playlists (configured in admin, cached), channel parsing and the choice of the HLS variant handed to ffmpeg. |
-| `drivetube/twitch.py` | **Twitch** through yt-dlp: who is live, saved videos, stream URLs. |
-| `drivetube/sources.py` | Turns what follows `/watch?v=` into something to play: a YouTube id, `tv.<list>.<channel>`, `tw.<channel>` or `twv.<video>`. |
+| `drivetube/raiplay.py` | **RaiPlay** catalogue from raiplay.it's JSON pages: home, genres, search, programmes, episodes, live channels. |
+| `drivetube/streamers.py` | **Twitch and Kick** through yt-dlp: favourites, who is live, saved videos, stream URLs (one class per platform). |
+| `drivetube/generic.py` | yt-dlp for sites other than YouTube: stream URLs, information and readable error messages (geo-blocking, DRM, offline). |
+| `drivetube/sources.py` | Turns what follows `/watch?v=` into something to play: a YouTube id, `tv.<list>.<channel>`, `rai.<video>`, `rail.<channel>`, `tw.<channel>`, `twv.<video>`, `k.<channel>` or `kv.<channel>~<video>`. |
 | `drivetube/chunkproxy.py` | Local proxy that downloads any HTTP URL in 10 MB pieces and resumes dropped connections. |
-| `drivetube/player.py` | Playback for each browser session: ties `youtube`, `live` and `twitch` to `media`, handles start, restarts after errors or 403, pause and cleanup. |
+| `drivetube/player.py` | Playback for each browser session: ties `youtube`, `live`, `raiplay` and `streamers` to `media`, handles start, restarts after errors or 403, pause and cleanup. |
 | `drivetube/server.py` | HTTP server: pages, player API, admin page, start-up. |
 | `drivetube/context.py` | Per-browser sessions, thread context and the privacy-aware log. |
 | `drivetube/access.py`, `settings.py` | Access codes and admin password; player settings and recent searches in browser cookies. |
@@ -306,6 +309,10 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.20
+- **RaiPlay** section: home rows, genres, search, programmes with seasons and episodes, RaiPlay live channels; next episodes offered in the player; clear messages for geo-blocked and DRM-protected titles.
+- **Kick** section, like Twitch: favourite channels, live status with preview, live streams and saved videos. The self-contained yt-dlp build needed by Kick installs by itself on first use, or from the admin page.
 
 ### 15.19
 - **New home with three sections**: live TV, YouTube and Twitch, each on its own page (`/live`, `/youtube`, `/twitch`) with a bar to switch between them and a *Riprendi* tile for what was playing. The YouTube home moved to `/youtube`; old links redirect.

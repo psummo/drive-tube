@@ -22,6 +22,74 @@ def ytdlp_bin():
     return "yt-dlp"
 
 
+# ---- yt-dlp "completo": l'eseguibile unico ufficiale, che contiene curl_cffi ----
+# Serve solo a Kick (protetto da Cloudflare: yt-dlp deve presentarsi come un vero
+# browser, "impersonate"). Si usa solo per Kick: parte piu' lentamente della
+# versione normale, che resta quella di YouTube e degli altri siti.
+YTDLP_FULL = os.path.expanduser("~/.local/bin/yt-dlp-full")
+_full_job = {"busy": False, "err": ""}
+
+
+def ytdlp_full_bin():
+    if IS_TERMUX:
+        return ytdlp_bin()   # su Android: il pacchetto Python (curl_cffi a parte)
+    if os.path.isfile(YTDLP_FULL) and os.access(YTDLP_FULL, os.X_OK):
+        return YTDLP_FULL
+    return ""
+
+
+def ytdlp_full_url():
+    import platform
+    m = platform.machine().lower()
+    name = {"x86_64": "yt-dlp_linux", "amd64": "yt-dlp_linux", "aarch64": "yt-dlp_linux_aarch64",
+            "arm64": "yt-dlp_linux_aarch64", "armv7l": "yt-dlp_linux_armv7l"}.get(m)
+    if not name:
+        raise RuntimeError("processore %s non previsto dalle versioni complete di yt-dlp" % m)
+    return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + name
+
+
+def ytdlp_full_install():
+    """Scarica (o aggiorna) yt-dlp completo. Restituisce la versione."""
+    os.makedirs(os.path.dirname(YTDLP_FULL), exist_ok=True)
+    tmp = YTDLP_FULL + ".new"
+    req = urllib.request.Request(ytdlp_full_url(), headers={"User-Agent": "drive-tube"})
+    with urllib.request.urlopen(req, timeout=300) as r, open(tmp, "wb") as f:
+        shutil.copyfileobj(r, f)
+    os.chmod(tmp, 0o755)
+    v = tool_version([tmp, "--version"])
+    if not v or not v[0].isdigit():
+        os.remove(tmp)
+        raise RuntimeError("il file scaricato non funziona")
+    os.replace(tmp, YTDLP_FULL)
+    return v
+
+
+def ytdlp_full_start():
+    """Installazione in background (la prima volta che si apre Kick)."""
+    if _full_job["busy"] or ytdlp_full_bin():
+        return
+    _full_job["busy"] = True
+    _full_job["err"] = ""
+
+    def run():
+        try:
+            v = ytdlp_full_install()
+            print("yt-dlp completo installato:", v, flush=True)
+        except Exception as e:
+            _full_job["err"] = str(e)[:200]
+            print("yt-dlp completo non installato:", e, flush=True)
+        finally:
+            _full_job["busy"] = False
+    import threading
+    threading.Thread(target=run, daemon=True).start()
+
+
+def ytdlp_full_state():
+    b = ytdlp_full_bin()
+    return {"installed": bool(b), "busy": _full_job["busy"], "err": _full_job["err"],
+            "version": tool_version([b, "--version"]) if b else ""}
+
+
 def tool_version(cmd):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -220,6 +288,11 @@ def ytdlp_update():
     os.replace(tmp, YTDLP_LOCAL)
     feed_cache.clear()
     _ytdlp_latest["t"] = 0
+    if os.path.isfile(YTDLP_FULL):
+        try:
+            ytdlp_full_install()   # anche la copia completa (Kick) resta allineata
+        except Exception as e:
+            print("yt-dlp completo non aggiornato:", e, flush=True)
     return v
 
 
