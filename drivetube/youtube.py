@@ -462,10 +462,17 @@ class StreamError(RuntimeError):
         self.kind = kind
 
 
+# client di yt-dlp che non accettano cookie: con i cookie yt-dlp li salta e basta
+NO_COOKIE_CLIENTS = ("android_vr", "ios", "android")
+
+
 def stream_urls(page_url, fmt, net=None):
     """URL diretti degli stream (video e, se separato, audio) per il formato
     yt-dlp `fmt`. Solleva StreamError."""
+    n = net if net is not None else ACCESS.get("yt")
+    client = n.get("client", "") if isinstance(n, dict) else ""
     p = run_yt("-g", "--no-playlist", "--user-agent", UA, "-f", fmt, page_url, net=net,
+        cookies=False if client in NO_COOKIE_CLIENTS else None,
         text=True, capture_output=True,
     )
     if p.returncode != 0:

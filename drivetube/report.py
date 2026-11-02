@@ -20,6 +20,36 @@ def _clean(text, n=2000):
     return re.sub(r"[\x00-\x08\x0b-\x1f]", " ", str(text))[:n]
 
 
+def _url_age(st):
+    c = st.get("url_cache")
+    if not c:
+        return "nessuno in memoria (dopo un 403 si buttano)"
+    return "presi %d s fa" % (time.time() - c["t"])
+
+
+def _pot_line():
+    try:
+        from .potoken import pot_status
+        p = pot_status()
+        return "server %s%s, plugin %s" % ("attivo" if p["server"] else "NON attivo",
+                                          " " + p["server_version"] if p["server_version"] else "",
+                                          "installato" if p["plugin"] else "NON installato")
+    except Exception as e:
+        return "non letto: %s" % e
+
+
+def _cookie_line():
+    try:
+        from .youtube import COOKIE_CHECK
+        from .access import cookie_mode
+        c = COOKIE_CHECK
+        when = "%d min fa" % ((time.time() - c["t"]) / 60) if c.get("t") else "mai"
+        state = {True: "validi", False: "NON validi", None: "non verificati"}.get(c.get("ok"), "?")
+        return "uso: %s, ultima verifica %s: %s %s" % (cookie_mode(), when, state, c.get("msg") or "")
+    except Exception as e:
+        return "non letto: %s" % e
+
+
 def save_report(s, note, client):
     """Salva una segnalazione della sessione `s`. Ritorna l'id."""
     os.makedirs(REPORT_DIR, exist_ok=True)
@@ -50,6 +80,9 @@ def save_report(s, note, client):
         "velocita' dal server: %.2f MB/s, coda video: %d, coda audio: %d" % (
             float(st.get("rate") or 0), len(st.get("v_q") or ()), len(st.get("a_q") or ())),
         "client YouTube di ripiego: %s" % ((st.get("net") or {}).get("client") or "-"),
+        "URL dello stream: %s" % _url_age(st),
+        "PO token: %s" % _pot_line(),
+        "cookie YouTube: %s" % _cookie_line(),
         "errore: %s" % (st.get("err") or "-"),
         "",
         "== browser",

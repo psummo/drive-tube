@@ -82,6 +82,11 @@ def set_page(url, src=None):
     state['seek_base'] = 0.0
     state['is_live'] = bool(src.get("live"))
     state['title'] = src.get("title", "")
+    # il client di ripiego scelto dopo un 403 valeva per quel video: il
+    # successivo riparte dalla configurazione normale (prima restava, e un
+    # client che vuole il PO token, come mweb, faceva fallire anche i video dopo)
+    state['net'] = None
+    state['url_cache'] = None
     sthread(fetch_duration).start()
     new_session(0)
 
@@ -241,9 +246,25 @@ def h264_height():
 def ytdlp_format():
     if state["vmode"] == "h264":
         # solo H.264 (avc1), video e audio separati; mai sopra i 720p
+        # In coda gli stream unici (video+audio insieme): alcuni client di
+        # ripiego (web_safari) hanno solo quelli, in HLS, e senza queste
+        # alternative yt-dlp rispondeva "Requested format is not available"
         h = h264_height()
-        return "bv*[vcodec^=avc1][height<=%d]+ba/bv*[vcodec^=avc1][height<=720]+ba" % h
+        return ("bv*[vcodec^=avc1][height<=%d]+ba/bv*[vcodec^=avc1][height<=720]+ba"
+                "/b[vcodec^=avc1][height<=%d]/b[vcodec^=avc1][height<=720]" % (h, h))
     return "bv*[height<=720]+ba/bv*+ba/b"
+
+
+URL_KEEP = 20 * 60   # URL di YouTube riusati per 20 minuti (salti nel video, ricarica della pagina)
+
+
+def cached_urls(net):
+    """URL gia' presi per questo video, formato e rete, se ancora buoni."""
+    c = state.get("url_cache")
+    if (c and c["url"] == cur().url and c["fmt"] == ytdlp_format() and c["net"] == net
+            and time.time() - c["t"] < URL_KEEP):
+        return c["urls"]
+    return None
 
 
 def ytdlp_urls(net=None, quiet=False):
@@ -270,7 +291,9 @@ def ytdlp_urls(net=None, quiet=False):
             state["err"] = "%s: %s" % (label, e)
             raise RuntimeError(state["err"])
     try:
-        return stream_urls(cur().url, ytdlp_format(), net)
+        lst = stream_urls(cur().url, ytdlp_format(), net)
+        state["url_cache"] = {"url": cur().url, "fmt": ytdlp_format(), "net": net, "t": time.time(), "urls": lst}
+        return lst
     except StreamError as e:
         if quiet:
             raise
@@ -318,8 +341,10 @@ def spawn_ff(gen, pos, vsrc, asrc, askip=0):
     if kind() == "yt":
         # solo gli stream di YouTube passano dal proxy a pezzi (taglia le
         # connessioni lunghe); dirette HLS e Twitch vanno a ffmpeg cosi' come sono
-        pv = px_url(vsrc)
-        pa = pv if asrc == vsrc else px_url(asrc)
+        # (le playlist HLS no: i pezzi elencati dentro ffmpeg li scarica da se')
+        hls = lambda u: ".m3u8" in u or "/manifest/" in u
+        pv = vsrc if hls(vsrc) else px_url(vsrc)
+        pa = pv if asrc == vsrc else (asrc if hls(asrc) else px_url(asrc))
         opts = {}
     else:
         pv, pa = vsrc, asrc
@@ -391,6 +416,8 @@ def watch_ff(gen, p, pos, threads, tail):
         urls = state.get("urls")
         state["ff"] = None
         forbidden = any("403" in line for line in tail) or px_forbidden(state.get("px_urls"))
+        if forbidden:
+            state["url_cache"] = None
         cur_net = state.get("net")
     time.sleep(min(fails, 5) + 0.5)
     if forbidden or fails >= 2 or not urls:
@@ -411,6 +438,12 @@ def watch_ff(gen, p, pos, threads, tail):
                 state["net"] = net
             break
         if not lst:
+            if forbidden and fails >= 2 and kind() == "yt":
+                # nessun client di ripiego ha dato URL: prima il player restava a
+                # girare senza dire niente
+                state["err"] = ("YouTube rifiuta lo stream (403) con tutti i client provati. Riprova tra qualche "
+                                "minuto; se succede spesso controlla PO token e cookie nella pagina admin.")
+                print(state["err"], flush=True)
             return
         state["err"] = ""
         urls = (lst[0], lst[1] if len(lst) > 1 else lst[0])
@@ -446,7 +479,10 @@ def start_ff():
     net = state.get("net")
     lock.release()
     try:
-        urls = ytdlp_urls(net)
+        # un salto nel video (o la pagina ricaricata) non chiede di nuovo gli URL
+        # a YouTube: yt-dlp costa ogni volta diversi secondi. Se nel frattempo
+        # sono scaduti, il 403 li fa riprendere subito (watch_ff)
+        urls = (cached_urls(net) if kind() == "yt" else None) or ytdlp_urls(net)
     except Exception:
         lock.acquire()
         if state["gen"] == gen:

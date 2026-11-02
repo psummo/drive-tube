@@ -311,6 +311,11 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.22
+- **403 from YouTube, fixed fallback**: when YouTube refused the stream, the fallback clients failed one after the other (`web_safari` offers only combined video+audio HLS streams, which the H.264 format choice did not accept; `android_vr` was skipped because it does not take cookies) and the player kept spinning without a message. Now combined streams are accepted (HLS playlists go straight to ffmpeg), `android_vr` runs without cookies, and if every client fails the player says so. The fallback client no longer carries over to the next video.
+- **Faster seeks and reloads**: the stream URLs of the current video are reused for 20 minutes instead of running yt-dlp (several seconds) at every seek or page reload; after a 403 they are fetched again at once.
+- Problem reports also show the PO token server, the last cookie check and how old the stream URLs are.
+
 ### 15.21
 - **Twitch and Kick: live streams available now**, the most watched first, with filters for language (Italian or all) and the most watched categories, plus a page with all categories. Channels can be added to the favourites straight from the list.
 
