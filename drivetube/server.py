@@ -93,7 +93,7 @@ from .player import (
     stop_all,
     yt_here,
 )
-from . import explore, live, raiplay
+from . import archive, explore, live, raiplay
 from .streamers import KICK, PLATFORMS, TWITCH
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
@@ -113,7 +113,7 @@ from .browser import (
     login_type,
     refresh_supervisor,
 )
-from .pages import LANDING_HTML, LIVE_HTML, RAIPLAY_HTML, STREAMERS_HTML, with_nav
+from .pages import ARCHIVE_HTML, LANDING_HTML, LIVE_HTML, RAIPLAY_HTML, STREAMERS_HTML, with_nav
 from .pages import FRAMETEST_HTML, KEYTEST_HTML, CHANNEL_HTML, HOME_HTML, SEARCH_HTML, ADMIN_HTML, PLAYER_HTML, LOGIN_HTML, TEST_HTML, WASMTEST_HTML, h264_wasm_gz, page
 
 
@@ -136,7 +136,7 @@ def cookie_hdr(name, value, max_age=31536000, strict=False):
 
 
 # pagine HTML (senza accesso si va al login); il resto risponde 401
-HTML_PATHS = {"/", "/index.html", "/home", "/youtube", "/live", "/raiplay", "/twitch", "/kick", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
+HTML_PATHS = {"/", "/index.html", "/home", "/youtube", "/live", "/raiplay", "/archivio", "/twitch", "/kick", "/search", "/channel", "/watch", "/test", "/wasmtest", "/keytest", "/frametest"}
 
 
 
@@ -346,6 +346,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/raiplay":
             self.html_out(self.raiplay_page(q))
+            return
+
+        if path == "/archivio":
+            self.html_out(self.archive_page(q))
             return
 
         if path == "/youtube":
@@ -882,8 +886,9 @@ class Handler(BaseHTTPRequestHandler):
                 w = "tv.%s.%s" % (lid, r["key"])
                 pic = ('<img src="%s" loading="lazy" alt="" referrerpolicy="no-referrer">' % html.escape(r["logo"])
                        if r["logo"] else '<div class="ph">%s</div>' % html.escape(r["name"][:2].upper()))
-                return ('<a class="ch%s" href="/watch?v=%s" data-n="%s">%s<span>%s</span></a>'
-                        % (" now" if w == now else "", w, html.escape(r["name"].lower()), pic, html.escape(r["name"])))
+                return ('<a class="ch%s" href="/watch?v=%s" data-n="%s" data-g="%s">%s<span>%s%s</span></a>'
+                        % (" now" if w == now else "", w, html.escape(r["name"].lower()), html.escape(r.get("group") or ""),
+                           pic, "&#9654; " if r.get("vod") else "", html.escape(r["name"])))
             free = [r for r in rows if not r["geo"]]
             geo = [r for r in rows if r["geo"]]
             out = []
@@ -891,6 +896,15 @@ class Handler(BaseHTTPRequestHandler):
                 out.append('<p class="err">Lista non disponibile: %s</p>' % html.escape(err))
             elif err:
                 out.append('<p class="note">Ultimo aggiornamento non riuscito (%s): mostro la lista precedente.</p>' % html.escape(err))
+            groups = []
+            for r in rows:
+                g = r.get("group") or ""
+                if g and g not in groups:
+                    groups.append(g)
+            if 1 < len(groups) <= 60:
+                # gruppi della lista (es. "Film", "Serie TV", "Sport") come filtri
+                out.append('<div class="lists groups" style="margin-bottom:6px"><a href="#" data-g="" class="on">Tutti</a>%s</div>'
+                           % "".join('<a href="#" data-g="%s">%s</a>' % (html.escape(g), html.escape(g)) for g in groups))
             if free:
                 out.append('<h2>Canali (%d)</h2><div class="grid">%s</div>' % (len(free), "".join(card(r) for r in free)))
             if geo:
@@ -1031,6 +1045,60 @@ class Handler(BaseHTTPRequestHandler):
                    % (plat.path, quote(r["ch"]), quote(here))))
         out.append("</div>")
         return "".join(out)
+
+    def archive_page(self, q):
+        """Internet Archive: scaffali (film, cartoni, noir...), ricerca, scheda di un titolo."""
+        esc = html.escape
+        qq = (q.get("q") or [""])[0].strip()[:80]
+        try:
+            shelf = int((q.get("s") or ["0"])[0])
+        except ValueError:
+            shelf = 0
+        shelf = shelf if 0 <= shelf < len(archive.SHELVES) else 0
+        ident = (q.get("id") or [""])[0]
+        out = []
+
+        def dur(n):
+            return "%d:%02d:%02d" % (n // 3600, n // 60 % 60, n % 60) if n else ""
+
+        try:
+            if ident:
+                it = archive.item(ident)
+                out.append('<h1>%s%s</h1><div class="hero"><img src="%s" alt="" onerror="this.remove()"><p>%s</p></div>' % (
+                    esc(it["title"]), " (%s)" % esc(it["year"]) if it["year"] else "", esc(archive.thumb(ident)),
+                    esc(it["desc"])))
+                files = it["files"]
+                if not files:
+                    out.append('<p class="note">Nessun video riproducibile in questo titolo.</p>')
+                elif len(files) == 1:
+                    out.append('<a class="btn" href="/watch?v=%s">&#9654; Guarda</a> <span class="note">%s</span>' % (
+                        archive.key(ident, files[0]["name"]), dur(files[0]["dur"])))
+                else:
+                    out.append("<h2>%d parti o episodi</h2>" % len(files))
+                    for f in files:
+                        out.append('<a class="ep" href="/watch?v=%s"><span>%s</span><small>%s</small></a>' % (
+                            archive.key(ident, f["name"]), esc(f["title"]), dur(f["dur"])))
+            else:
+                out.append('<div class="chips">%s</div>' % "".join(
+                    '<a href="/archivio?s=%d%s"%s>%s</a>' % (i, "&q=" + quote(qq) if qq else "",
+                                                           ' class="on"' if i == shelf else "", esc(n))
+                    for i, (n, _) in enumerate(archive.SHELVES)))
+                rows = archive.search(qq, shelf)
+                if qq:
+                    out.append("<h2>Ricerca: %s</h2>" % esc(qq))
+                if not rows:
+                    out.append('<p class="note">Nessun titolo trovato.</p>')
+                out.append('<div class="grid">%s</div>' % "".join(
+                    '<a class="it" href="/archivio?id=%s"><img src="%s" alt="" loading="lazy"><span>%s%s</span></a>' % (
+                        quote(r["id"]), esc(archive.thumb(r["id"])), esc(r["title"]),
+                        "<small>%s</small>" % esc(r["year"]) if r["year"] else "") for r in rows))
+        except Exception as e:
+            print("archivio:", e, flush=True)
+            out.append('<p class="note" style="color:#fca5a5">Internet Archive non disponibile: %s</p>' % esc(str(e)[:200]))
+        out.append('<p class="note" style="margin-top:20px">Opere di pubblico dominio dalle collezioni curate di '
+                   'Internet Archive (archive.org): film, cartoni e TV d\'epoca, soprattutto in inglese.</p>')
+        return (with_nav(ARCHIVE_HTML, "ia", self.who == "admin").replace("__Q__", esc(qq))
+                .replace("__S__", str(shelf)).replace("__BODY__", "".join(out)))
 
     def raiplay_page(self, q):
         """RaiPlay: home (dirette, generi, blocchi), ricerca, genere, programma, episodi."""

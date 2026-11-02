@@ -94,11 +94,37 @@ def pump_jpegs(gen, path):
 class TSVideo:
     """Estrae i frame video (PES) da uno stream MPEG-TS: (pts in secondi, dati Annex-B)."""
 
+    # tipo di stream nella tabella PMT -> codec che il player sa decodificare
+    STREAM_TYPES = {0x1B: "h264", 0x24: "hevc"}
+
     def __init__(self):
         self.buf = b""
         self.pid = None
         self.cur = None
         self.pts = None
+        self.pmt_pid = None
+        self.codec = None       # "h264", "hevc", "other" (dalla PMT), None finche' non letta
+
+    def _tables(self, pid, sec):
+        """PAT (pid 0): dove sta la PMT. PMT: tipo dello stream video."""
+        if not sec:
+            return
+        sec = sec[1 + sec[0]:]          # pointer field
+        if len(sec) < 12:
+            return
+        n = ((sec[1] & 0x0F) << 8) | sec[2]
+        body = sec[8:3 + n - 4]         # senza intestazione e CRC
+        if pid == 0 and sec[0] == 0x00:
+            for i in range(0, len(body) - 3, 4):
+                if (body[i] << 8 | body[i + 1]) != 0:
+                    self.pmt_pid = ((body[i + 2] & 0x1F) << 8) | body[i + 3]
+                    break
+        elif pid == self.pmt_pid and sec[0] == 0x02 and self.codec is None:
+            pi = ((body[2] & 0x0F) << 8) | body[3]
+            i = 4 + pi
+            if i + 5 <= len(body):
+                # ffmpeg scrive solo il video (-map 0:v:0 -an): c'e' un solo stream
+                self.codec = self.STREAM_TYPES.get(body[i], "other")
 
     def feed(self, chunk):
         out = []
@@ -122,6 +148,12 @@ class TSVideo:
             end = i + 188
             i = end
             if not (afc & 1) or p >= end:
+                continue
+            if pusi and (pid == 0 or pid == self.pmt_pid):
+                try:
+                    self._tables(pid, buf[p:end])
+                except IndexError:
+                    pass
                 continue
             if self.pid is not None and pid != self.pid:
                 continue
@@ -155,6 +187,7 @@ def pump_h264(gen, path):
     try:
         ts = TSVideo()
         last = None
+        told = False
         with open(path, "rb") as fh:
             nbytes = 0
             idle = 0.0
@@ -175,7 +208,16 @@ def pump_h264(gen, path):
                     nbytes = 0
                     idle = 0.0
                     t0 = now
-                for pts, data in ts.feed(chunk):
+                frames = ts.feed(chunk)
+                if ts.codec and not told:
+                    # primo record: il codec (lunghezza 0, tempo -1 H.264, -2 H.265,
+                    # -3 altro): il player prepara il decoder giusto
+                    state["v_q"].append(struct.pack("<Id", 0, {"h264": -1.0, "hevc": -2.0}.get(ts.codec, -3.0)))
+                    state["v_codec"] = ts.codec
+                    told = True
+                    if ts.codec != "h264":
+                        print("video %s" % ("H.265 (HEVC)" if ts.codec == "hevc" else "in un formato non H.264/H.265"), flush=True)
+                for pts, data in frames:
                     last = h264_push(pts, data, last)
             if state["gen"] == gen:
                 for pts, data in ts.finish():

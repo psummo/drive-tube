@@ -22,6 +22,8 @@ LIST_TTL = 6 * 3600       # una lista si ricarica (in background) dopo 6 ore
 MAX_LIST = 8 << 20        # una lista oltre 8 MB non e' una lista di canali
 GEO = "Ⓖ"            # Ⓖ
 
+VOD_EXT = (".mp4", ".mkv", ".m4v", ".mov", ".avi", ".webm", ".ts", ".mpg", ".mpeg")
+
 _cache = {}               # id lista -> {"t", "rows", "err"}
 _cache_lock = threading.Lock()
 _loading = {}             # id lista -> Event
@@ -95,8 +97,13 @@ def parse_m3u(text):
                 q = line.rfind('"')
                 head, name = line[:q + 1], line[q + 1:].lstrip(" ,")
             a = dict((k.lower(), v) for k, v in _attr.findall(head))
+            m = re.match(r"#EXTINF:\s*(-?[\d.]+)", head)
+            try:
+                dur = int(float(m.group(1))) if m else -1
+            except ValueError:
+                dur = -1
             info = {"name": name.strip() or a.get("tvg-name", ""), "logo": a.get("tvg-logo", ""),
-                    "group": a.get("group-title", "")}
+                    "group": a.get("group-title", ""), "dur": dur}
         elif line.startswith("#EXTVLCOPT:"):
             k, _, v = line[11:].partition("=")
             k = k.strip().lower()
@@ -131,6 +138,10 @@ def parse_m3u(text):
             if not re.match(r"^https?://", row["logo"]):
                 row["logo"] = ""
             row["key"] = hashlib.sha1(url.encode()).hexdigest()[:8]
+            # film ed episodi: una durata vera in #EXTINF (le dirette hanno -1 o 0)
+            # oppure un file video invece di una playlist
+            path = urllib.parse.urlsplit(url).path.lower()
+            row["vod"] = row["dur"] > 0 or path.endswith(VOD_EXT)
             rows.append(row)
             info, opts = None, {}
     return rows
@@ -273,11 +284,13 @@ def pick_variant(text, base, max_h=720, h264_only=False):
         h = int(m.group(2)) if m else 0
         codecs = a.get("CODECS", "")
         avc = (not codecs) or "avc1" in codecs
-        vars_.append({"h": h, "bw": int(a.get("BANDWIDTH") or 0), "avc": avc,
+        hevc = "hvc1" in codecs or "hev1" in codecs
+        vars_.append({"h": h, "bw": int(a.get("BANDWIDTH") or 0), "avc": avc, "hevc": hevc,
                       "url": urllib.parse.urljoin(base, uri), "audio": audio.get(a.get("AUDIO", ""))})
     if not vars_:
         return None
-    pool = [v for v in vars_ if v["avc"]] if h264_only else vars_
+    # il player decodifica H.264 e H.265: meglio H.264 (costa meno), poi H.265
+    pool = ([v for v in vars_ if v["avc"]] or [v for v in vars_ if v["hevc"]]) if h264_only else vars_
     pool = pool or vars_
     fit = [v for v in pool if v["h"] and v["h"] <= max_h] or [v for v in pool if not v["h"]] or pool
     # la piu' alta che sta nel limite; a parita' la banda maggiore. Senza

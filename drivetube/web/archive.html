@@ -1,0 +1,49 @@
+<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Archivio</title>
+<style>
+body{background:#111;color:#fff;font-family:sans-serif;margin:0}
+__NAVCSS__
+main{padding:0 12px 24px}
+form{display:flex;gap:8px;padding:12px 0}
+form input{flex:1;font-size:18px;padding:10px;border-radius:10px;border:0;background:#222;color:#fff}
+form button{font-size:18px;padding:10px 16px;border:0;border-radius:10px;background:#b45309;color:#fff}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.chips a,.chips a:visited{color:#fff;background:#333;text-decoration:none;padding:8px 12px;border-radius:12px;font-size:16px}
+.chips a.on{background:#fff;color:#000}
+h2{font-size:17px;margin:18px 0 8px}
+h1{font-size:22px;margin:14px 0 6px}
+.note{color:#aaa;font-size:14px;line-height:1.4}
+.row{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+.row .it{flex:0 0 220px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.ep,.ep:visited{display:flex;gap:12px;align-items:center;justify-content:space-between;background:#1c1c1c;border-radius:10px;padding:12px;color:#fff;text-decoration:none;margin-bottom:8px;font-size:16px}
+.ep small{color:#aaa;white-space:nowrap}
+.it,.it:visited{color:#fff;text-decoration:none;background:#1c1c1c;border-radius:10px;overflow:hidden;display:block}
+.it img,.it .ph{width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;display:block}
+.it .ph{display:flex;align-items:center;justify-content:center;color:#666;font-size:26px;font-weight:bold}
+.it span{display:block;padding:8px 10px;font-size:15px;line-height:1.3}
+.it small{display:block;color:#aaa;font-size:13px;margin-top:2px}
+.it.live span::before{content:"\25cf  ";color:#e11d48}
+.hero{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.hero img{width:320px;max-width:100%;border-radius:10px}
+.hero p{flex:1;min-width:240px;color:#ccc;line-height:1.4;margin:0}
+.btn,.btn:visited{display:inline-block;background:#b45309;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;font-size:18px;margin:8px 0}
+</style></head><body>
+__NAV__
+<main>
+<form action="/archivio"><input type="hidden" name="s" value="__S__"><input name="q" value="__Q__" placeholder="cerca un titolo, un attore, un genere" autocomplete="off"><button>cerca</button></form>
+__BODY__
+</main>
+<script>
+(function(){
+  var imgs = document.querySelectorAll('.it img');
+  for (var i = 0; i < imgs.length; i++) {
+    imgs[i].addEventListener('error', function(){
+      var d = document.createElement('div'); d.className = 'ph';
+      d.textContent = (this.parentNode.querySelector('span') || {textContent: ''}).textContent.trim().slice(0, 2).toUpperCase();
+      this.parentNode.replaceChild(d, this);
+    });
+  }
+})();
+</script>
+</body></html>

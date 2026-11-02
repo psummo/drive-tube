@@ -28,15 +28,26 @@ __BODY__
 <script>
 (function(){
   var f = document.getElementById('f');
+  var grp = '';
   function run(){
     var q = f.value.trim().toLowerCase();
     var cards = document.querySelectorAll('.ch');
     for (var i = 0; i < cards.length; i++) {
       var n = cards[i].getAttribute('data-n') || '';
-      cards[i].style.display = (!q || n.indexOf(q) !== -1) ? '' : 'none';
+      var okG = !grp || cards[i].getAttribute('data-g') === grp;
+      cards[i].style.display = ((!q || n.indexOf(q) !== -1) && okG) ? '' : 'none';
     }
   }
   f.addEventListener('input', run);
+  var gl = document.querySelectorAll('.groups a');
+  for (var j = 0; j < gl.length; j++) {
+    gl[j].addEventListener('click', function(ev){
+      ev.preventDefault();
+      grp = this.getAttribute('data-g') || '';
+      for (var k = 0; k < gl.length; k++) gl[k].className = gl[k] === this ? 'on' : '';
+      run();
+    });
+  }
   // logo che non si carica: al suo posto le iniziali del canale
   function noLogo(img){
     var d = document.createElement('div');

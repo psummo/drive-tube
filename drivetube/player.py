@@ -21,6 +21,7 @@ from .context import (
     state,
     sthread,
 )
+from .config import UA
 from .settings import C
 from .youtube import (
     FALLBACK_CLIENTS,
@@ -33,7 +34,7 @@ from .youtube import (
     video_info,
 )
 from .chunkproxy import px_forbidden, px_url
-from . import generic, live, raiplay
+from . import archive, generic, live, raiplay
 from .streamers import by_key
 from .sources import resolve
 from .media import (
@@ -82,6 +83,7 @@ def set_page(url, src=None):
     state['seek_base'] = 0.0
     state['is_live'] = bool(src.get("live"))
     state['title'] = src.get("title", "")
+    state['duration'] = src.get("dur") or 0
     # il client di ripiego scelto dopo un 403 valeva per quel video: il
     # successivo riparte dalla configurazione normale (prima restava, e un
     # client che vuole il PO token, come mweb, faceva fallire anche i video dopo)
@@ -178,6 +180,17 @@ def next_of_current():
             return []
         return [{"href": "/watch?v=%s.%s" % (plat.vod_key, vid), "title": title, "thumb": ""}
                 for vid, title, dur in plat.vods(name)[:8]]
+    if src.get("kind") == "ia":
+        ident, name = src["ia"]
+        try:
+            files = archive.item(ident)["files"]
+        except Exception:
+            return []
+        i = next((n for n, f in enumerate(files) if f["name"] == name), -1)
+        if i >= 0 and len(files) > 1:
+            return [{"href": "/watch?v=" + archive.key(ident, f["name"]), "title": f["title"], "thumb": archive.thumb(ident)}
+                    for f in files[i + 1:i + 9]]
+        return []
     if src.get("kind") == "rai":
         return [{"href": "/watch?v=" + raiplay.video_key(r["path"]),
                  "title": r["title"] + (" - " + r["sub"] if r["sub"] else ""), "thumb": r["img"]}
@@ -211,8 +224,17 @@ def fetch_duration():
     url = cur().url
     if (state["duration"] or state.get("is_live")) and state.get("title") or not url:
         return
-    if kind() == "m3u":
-        return  # canale TV: sempre in diretta, nome dalla lista
+    if kind() in ("m3u", "ia"):
+        # canale TV: sempre in diretta, nome dalla lista. Film di una lista o
+        # dell'Archive senza durata scritta: la chiede ffprobe al file
+        src = cur().src or {}
+        if not state["duration"] and not state.get("is_live"):
+            ua, hdr = live.ff_headers(src["row"]) if src.get("row") else (None, "")
+            d = probe_duration(url, ua, hdr)
+            if d and cur().url == url:
+                state["duration"] = d
+                print("duration", d, flush=True)
+        return
     if kind() == "stream":
         info = platform().info(url)
     elif kind() == "rai":
@@ -231,6 +253,19 @@ def fetch_duration():
         print("duration", state["duration"], flush=True)
     else:
         print("duration sconosciuta", flush=True)
+
+
+def probe_duration(url, ua=None, headers=""):
+    cmd = ["ffprobe", "-v", "error", "-user_agent", ua or UA]
+    if headers:
+        cmd += ["-headers", headers]
+    cmd += ["-protocol_whitelist", "http,https,tcp,tls,crypto,data", "-show_entries", "format=duration",
+            "-of", "default=nw=1:nk=1", url]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return int(float(p.stdout.strip().splitlines()[0]))
+    except Exception:
+        return 0
 
 
 def now_pos():
@@ -272,7 +307,11 @@ def ytdlp_urls(net=None, quiet=False):
     # quiet: in caso di errore non tocca state["err"] (il client lo leggerebbe
     # e, per esempio, passerebbe a MJPEG mentre si stanno provando altri client)
     k = kind()
+    if k == "ia":
+        return [cur().url]   # file dell'Archive: ffmpeg lo legge direttamente
     if k == "m3u":
+        if (cur().src or {}).get("row", {}).get("vod"):
+            return [cur().src["row"]["url"]]
         try:
             v, a = live.stream_of(cur().src["row"], h264_height() if state["vmode"] == "h264" else 720,
                                   state["vmode"] == "h264")

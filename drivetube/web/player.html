@@ -1001,7 +1001,7 @@ function hLoad(){
     ok = typeof WebAssembly === 'object' && WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]));
   } catch (e) { ok = false; }
   if (!ok) { hReady = Promise.reject(new Error('WebAssembly SIMD assente')); hReady.catch(function(){}); return hReady; }
-  hReady = fetch('/h264.wasm').then(function(r){
+  hReady = fetch('/h264.wasm?v=__VER__').then(function(r){
     if (!r.ok) throw new Error('decoder HTTP ' + r.status);
     return r.arrayBuffer();
   }).then(function(buf){
@@ -1084,6 +1084,7 @@ function hDraw(y, u, v, ly, lu, lv, w, h){
 function hNew(X){
   hWasm.dec_init();
   hs = {
+    codec: 'h264',
     gen: gen, X: X, pk: [], lastPts: -1, outPts: -1e9, shownPts: -1e9, dur: 1 / 30,
     target: X, ended: false, flushed: false, failed: 0, started: false, drawn: 0,
     late: 0, abort: null, lastT: -1, frozenAt: 0, resumeTried: false, askedTap: false,
@@ -1183,6 +1184,12 @@ function hStream(){
           var dv = new DataView(pend.buffer, pend.byteOffset + off, 12);
           var n = dv.getUint32(0, true), pts = dv.getFloat64(4, true);
           if (pend.length - off - 12 < n) break;
+          if (n === 0 && pts < 0) {
+            // record del codec mandato dal server prima dei frame
+            off += 12;
+            if (!hCodec(me, pts)) return;
+            continue;
+          }
           me.pk.push({pts: pts, data: pend.subarray(off + 12, off + 12 + n)});
           if (pts > me.lastPts) me.lastPts = pts;
           off += 12 + n;
@@ -1193,6 +1200,20 @@ function hStream(){
     }
     return read();
   }).catch(function(){});
+}
+// -1 H.264, -2 H.265 (HEVC), -3 altro formato. Ritorna false se si passa a MJPEG.
+function hCodec(me, code){
+  var want = code === -2 ? 'hevc' : code === -1 ? 'h264' : '';
+  if (!want || (want === 'hevc' && !hWasm.dec_init_codec)) {
+    setTimeout(function(){ if (hs === me) hFallback(want ? 'decoder H.265 assente' : 'formato video non H.264/H.265'); }, 0);
+    return false;
+  }
+  if (me.codec !== want) {
+    if (hWasm.dec_init_codec) hWasm.dec_init_codec(want === 'hevc' ? 1 : 0); else hWasm.dec_init();
+    me.codec = want;
+    if (want === 'hevc') ui('video H.265 (HEVC): decodifica nel browser');
+  }
+  return true;
 }
 // decodifica pacchetti finche' esce un frame; false se non c'e' altro da decodificare
 function hDecodeNext(){

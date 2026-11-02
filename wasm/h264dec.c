@@ -1,4 +1,5 @@
-// Decoder H.264 per il browser: parser + decoder di FFmpeg, compilati in WebAssembly.
+// Decoder H.264 e H.265 (HEVC) per il browser: parser + decoder di FFmpeg,
+// compilati in WebAssembly. dec_init() prepara H.264, dec_init_codec(1) H.265.
 // Due modi d'uso:
 //  - stream Annex-B grezzo: JS scrive i byte in in_buf() e chiama feed(n) oppure
 //    push(n)/next(); il parser di FFmpeg divide i frame;
@@ -8,6 +9,7 @@
 // riceve anche il tempo del frame in secondi (-1 se sconosciuto).
 #include <libavcodec/avcodec.h>
 #include <libavutil/log.h>
+#include <libavutil/pixfmt.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +29,9 @@ static int rgbacap;
 static int frames_out;
 static uint8_t *cur;   // input ancora da consumare per push()/next()
 static int left;
+static int codec_id = AV_CODEC_ID_H264;
+static uint8_t *p8[3];  // piani a 8 bit per i video a 10 bit (HEVC Main10)
+static int p8cap[3];
 
 EXPORT("dec_init") int dec_init(void) {
     av_log_set_level(AV_LOG_QUIET);
@@ -35,17 +40,23 @@ EXPORT("dec_init") int dec_init(void) {
     av_packet_free(&pkt);
     av_frame_free(&frm);
     left = 0;
-    const AVCodec *c = avcodec_find_decoder(AV_CODEC_ID_H264);
+    const AVCodec *c = avcodec_find_decoder(codec_id);
     if (!c) return -1;
     ctx = avcodec_alloc_context3(c);
     ctx->thread_count = 1;
     ctx->pkt_timebase = (AVRational){1, 1000000};
     ctx->flags2 |= AV_CODEC_FLAG2_FAST;
     if (avcodec_open2(ctx, c, NULL) < 0) return -2;
-    par = av_parser_init(AV_CODEC_ID_H264);
+    par = av_parser_init(codec_id);
     pkt = av_packet_alloc();
     frm = av_frame_alloc();
     return (par && pkt && frm) ? 0 : -3;
+}
+
+// 0 = H.264, 1 = H.265/HEVC
+EXPORT("dec_init_codec") int dec_init_codec(int c) {
+    codec_id = c == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+    return dec_init();
 }
 
 EXPORT("in_buf") uint8_t *in_buf(int size) {
@@ -58,14 +69,33 @@ EXPORT("in_buf") uint8_t *in_buf(int size) {
     return inbuf;
 }
 
+// 10 bit -> 8 bit (il disegno in JS lavora a 8 bit): un piano alla volta
+static uint8_t *to8(int i, const uint8_t *src, int ls, int w, int h) {
+    int need = w * h;
+    if (need > p8cap[i]) { free(p8[i]); p8[i] = malloc(need); p8cap[i] = need; }
+    for (int j = 0; j < h; j++) {
+        const uint16_t *r = (const uint16_t *)(src + j * ls);
+        uint8_t *d = p8[i] + j * w;
+        for (int x = 0; x < w; x++) d[x] = r[x] >> 2;
+    }
+    return p8[i];
+}
+
 static void drain(void) {
     while (avcodec_receive_frame(ctx, frm) == 0) {
         frames_out++;
         int64_t ts = frm->pts != AV_NOPTS_VALUE ? frm->pts : frm->best_effort_timestamp;
+        double sec = ts == AV_NOPTS_VALUE ? -1.0 : ts / 1000000.0;
+        if (frm->format == AV_PIX_FMT_YUV420P10LE) {
+            int w = frm->width, h = frm->height, cw = (w + 1) >> 1, ch = (h + 1) >> 1;
+            on_frame(to8(0, frm->data[0], frm->linesize[0], w, h), to8(1, frm->data[1], frm->linesize[1], cw, ch),
+                     to8(2, frm->data[2], frm->linesize[2], cw, ch), w, cw, cw, w, h, sec);
+            av_frame_unref(frm);
+            continue;
+        }
         on_frame(frm->data[0], frm->data[1], frm->data[2],
                  frm->linesize[0], frm->linesize[1], frm->linesize[2],
-                 frm->width, frm->height,
-                 ts == AV_NOPTS_VALUE ? -1.0 : ts / 1000000.0);
+                 frm->width, frm->height, sec);
         av_frame_unref(frm);
     }
 }

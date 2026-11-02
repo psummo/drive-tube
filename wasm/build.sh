@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ricompila il decoder H.264 in WebAssembly e lo copia in drivetube/web/h264.wasm.
+# Ricompila il decoder H.264/H.265 in WebAssembly e lo copia in drivetube/web/h264.wasm.
 # Serve solo clang/lld (>= 15), cmake, ninja, make, git e python3: niente emscripten.
 # Uso: wasm/build.sh   (dalla cartella drive-tube; lavora in wasm/.build)
 set -e
@@ -37,7 +37,7 @@ if [ ! -f sysroot/lib/wasm32-wasip1/libc.a ]; then
   ninja -C wasi-libc/build install
 fi
 
-# 3) FFmpeg con il solo decoder e parser H.264
+# 3) FFmpeg con i soli decoder e parser H.264 e H.265 (HEVC)
 CC="clang --target=wasm32-wasip1 --sysroot=$W/sysroot"
 if [ ! -f ff/lib/libavcodec.a ]; then
   [ -d ffmpeg ] || git clone -q --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
@@ -45,7 +45,7 @@ if [ ! -f ff/lib/libavcodec.a ]; then
   ../ffmpeg/configure --prefix="$W/ff" --enable-cross-compile --target-os=none --arch=wasm32 \
     --cc="$CC" --ld="$CC" --ar=llvm-ar --ranlib=llvm-ranlib --nm=llvm-nm \
     --extra-cflags="-O3 -msimd128 -D_WASI_EMULATED_SIGNAL" \
-    --disable-everything --enable-decoder=h264 --enable-parser=h264 \
+    --disable-everything --enable-decoder=h264,hevc --enable-parser=h264,hevc \
     --disable-programs --disable-doc --disable-network --disable-pthreads --disable-w32threads --disable-os2threads \
     --disable-avdevice --disable-avformat --disable-swresample --disable-swscale --disable-avfilter \
     --disable-asm --disable-inline-asm --disable-x86asm --disable-debug --disable-runtime-cpudetect --disable-autodetect
