@@ -13,11 +13,16 @@ from .context import print, sthread
 
 # lista predefinita: i canali italiani in chiaro raccolti dal progetto Free-TV/IPTV
 # (solo stream pubblici e gratuiti). Ⓖ nel nome = visibile solo dall'Italia.
-DEFAULT_LISTS = [{
-    "id": "it",
-    "name": "TV italiane",
-    "url": "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists/playlist_italy.m3u8",
-}]
+DEFAULT_LISTS = [
+    {"id": "it", "name": "TV italiane",
+     "url": "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists/playlist_italy.m3u8"},
+    # iptv-org: raccolta molto curata di canali pubblici e gratuiti, aggiornata ogni giorno.
+    # In italiano ci sono anche i canali gratuiti di Pluto TV, Samsung TV Plus e Rakuten
+    # TV per l'Italia, RSI (Svizzera) e San Marino RTV
+    {"id": "ita", "name": "Canali in italiano", "url": "https://iptv-org.github.io/iptv/languages/ita.m3u"},
+    {"id": "kids", "name": "Bambini (mondo)", "url": "https://iptv-org.github.io/iptv/categories/kids.m3u"},
+    {"id": "news", "name": "Notizie dal mondo", "url": "https://iptv-org.github.io/iptv/categories/news.m3u"},
+]
 LIST_TTL = 6 * 3600       # una lista si ricarica (in background) dopo 6 ore
 MAX_LIST = 8 << 20        # una lista oltre 8 MB non e' una lista di canali
 GEO = "Ⓖ"            # Ⓖ
@@ -33,7 +38,22 @@ def m3u_lists():
     """Liste configurate: [{"id", "name", "url"}]. Mai toccate: quella predefinita."""
     lst = ACCESS.get("m3u")
     if isinstance(lst, list):
-        return [x for x in lst if isinstance(x, dict) and x.get("id") and x.get("url")]
+        lst = [x for x in lst if isinstance(x, dict) and x.get("id") and x.get("url")]
+        # liste predefinite arrivate con un aggiornamento: si aggiungono una volta
+        # sola (se poi le togli, restano tolte)
+        seen = ACCESS.get("m3u_seen") or ["it"]
+        new = [dict(x) for x in DEFAULT_LISTS if x["id"] not in seen]
+        if new:
+            lst += [x for x in new if all(y["url"] != x["url"] for y in lst)]
+            # (chi aggiunge o toglie una lista tiene gia' il lucchetto: niente attesa)
+            if ACCESS_LOCK.acquire(blocking=False):
+                try:
+                    ACCESS["m3u"] = lst
+                    ACCESS["m3u_seen"] = [x["id"] for x in DEFAULT_LISTS]
+                    access_save()
+                finally:
+                    ACCESS_LOCK.release()
+        return lst
     return [dict(x) for x in DEFAULT_LISTS]
 
 
@@ -56,6 +76,7 @@ def m3u_add(name, url):
         lid = hashlib.sha1(url.encode()).hexdigest()[:6]
         lst.append({"id": lid, "name": name or urllib.parse.urlsplit(url).hostname or "lista", "url": url})
         ACCESS["m3u"] = lst
+        ACCESS["m3u_seen"] = [x["id"] for x in DEFAULT_LISTS]
         access_save()
     return ""
 
@@ -64,13 +85,14 @@ def m3u_del(lid):
     with ACCESS_LOCK:
         lst = [x for x in m3u_lists() if x["id"] != lid]
         ACCESS["m3u"] = lst
+        ACCESS["m3u_seen"] = [x["id"] for x in DEFAULT_LISTS]
         access_save()
     with _cache_lock:
         _cache.pop(lid, None)
 
 
 def m3u_reset():
-    """Torna alla sola lista predefinita."""
+    """Torna alle liste predefinite."""
     with ACCESS_LOCK:
         ACCESS.pop("m3u", None)
         access_save()
@@ -133,8 +155,9 @@ def parse_m3u(text):
                     row["ua"] = v
                 elif k in ("referer", "referrer"):
                     row["ref"] = v
-            row["geo"] = GEO in row["name"]
-            row["name"] = row["name"].replace(GEO, "").strip() or "canale"
+            # geo-bloccato: Ⓖ nelle liste di Free-TV, [Geo-blocked] in quelle di iptv-org
+            row["geo"] = GEO in row["name"] or "[Geo-blocked]" in row["name"]
+            row["name"] = re.sub(r"\s*\[(Geo-blocked|Not 24/7)\]", "", row["name"].replace(GEO, "")).strip() or "canale"
             if not re.match(r"^https?://", row["logo"]):
                 row["logo"] = ""
             row["key"] = hashlib.sha1(url.encode()).hexdigest()[:8]

@@ -5,7 +5,7 @@
 #
 # Punto di avvio. Il codice sta nel pacchetto drivetube/ (backend) e le pagine
 # in drivetube/web/ (frontend). Questa riga e' l'unica fonte della versione:
-VERSION = "15.23"
+VERSION = "15.24"
 
 import os
 import sys

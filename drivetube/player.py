@@ -34,7 +34,7 @@ from .youtube import (
     video_info,
 )
 from .chunkproxy import px_forbidden, px_url
-from . import archive, generic, live, raiplay
+from . import generic, live, raiplay
 from .streamers import by_key
 from .sources import resolve
 from .media import (
@@ -180,17 +180,6 @@ def next_of_current():
             return []
         return [{"href": "/watch?v=%s.%s" % (plat.vod_key, vid), "title": title, "thumb": ""}
                 for vid, title, dur in plat.vods(name)[:8]]
-    if src.get("kind") == "ia":
-        ident, name = src["ia"]
-        try:
-            files = archive.item(ident)["files"]
-        except Exception:
-            return []
-        i = next((n for n, f in enumerate(files) if f["name"] == name), -1)
-        if i >= 0 and len(files) > 1:
-            return [{"href": "/watch?v=" + archive.key(ident, f["name"]), "title": f["title"], "thumb": archive.thumb(ident)}
-                    for f in files[i + 1:i + 9]]
-        return []
     if src.get("kind") == "rai":
         return [{"href": "/watch?v=" + raiplay.video_key(r["path"]),
                  "title": r["title"] + (" - " + r["sub"] if r["sub"] else ""), "thumb": r["img"]}
@@ -224,9 +213,9 @@ def fetch_duration():
     url = cur().url
     if (state["duration"] or state.get("is_live")) and state.get("title") or not url:
         return
-    if kind() in ("m3u", "ia"):
-        # canale TV: sempre in diretta, nome dalla lista. Film di una lista o
-        # dell'Archive senza durata scritta: la chiede ffprobe al file
+    if kind() == "m3u":
+        # canale TV: sempre in diretta, nome dalla lista. Film di una lista
+        # senza durata scritta: la chiede ffprobe al file
         src = cur().src or {}
         if not state["duration"] and not state.get("is_live"):
             ua, hdr = live.ff_headers(src["row"]) if src.get("row") else (None, "")
@@ -307,8 +296,6 @@ def ytdlp_urls(net=None, quiet=False):
     # quiet: in caso di errore non tocca state["err"] (il client lo leggerebbe
     # e, per esempio, passerebbe a MJPEG mentre si stanno provando altri client)
     k = kind()
-    if k == "ia":
-        return [cur().url]   # file dell'Archive: ffmpeg lo legge direttamente
     if k == "m3u":
         if (cur().src or {}).get("row", {}).get("vod"):
             return [cur().src["row"]["url"]]

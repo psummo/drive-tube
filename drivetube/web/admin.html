@@ -162,7 +162,7 @@ di solito non partono.</small></p>
   <input id="m3uname" placeholder="nome (es. Sport)" size="14">
   <input id="m3uurl" placeholder="https://.../lista.m3u8" size="40">
   <button class="go" id="m3uadd">Aggiungi lista</button>
-  <button id="m3ureset">Ripristina la lista predefinita</button>
+  <button id="m3ureset">Ripristina le liste predefinite</button>
 </div>
 
 <h2>Segnalazioni</h2>
@@ -445,7 +445,7 @@ $('m3uadd').onclick = function(){
   });
 };
 $('m3ureset').onclick = function(){
-  if (!confirm('Tornare alla sola lista predefinita (TV italiane)?')) return;
+  if (!confirm('Tornare alle liste predefinite (TV italiane, canali in italiano, bambini, notizie)?')) return;
   api('m3u/reset', {}).then(m3uRender);
 };
 loadM3u();

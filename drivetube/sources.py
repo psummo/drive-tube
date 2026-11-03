@@ -9,7 +9,7 @@
 
 Gli id YouTube non contengono mai il punto, quindi non si confondono."""
 import re
-from . import archive, live, raiplay
+from . import live, raiplay
 from .streamers import by_key
 
 YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -32,19 +32,6 @@ def resolve(watch):
         return row["url"], {"kind": "m3u", "watch": w, "title": row["name"], "thumb": row["logo"],
                             "live": not row.get("vod"), "dur": max(0, row.get("dur") or 0) if row.get("vod") else 0,
                             "list": lid, "row": row, "home": "/live?l=" + lid}
-    if parts[0] == "ia" and len(parts) == 2:
-        k = archive.unkey(parts[1])
-        if not k:
-            return None
-        try:
-            it = archive.item(k[0])
-        except Exception:
-            it = {"title": k[0], "files": []}
-        f = next((x for x in it["files"] if x["name"] == k[1]), None)
-        title = it["title"] if len(it["files"]) <= 1 or not f else "%s - %s" % (it["title"], f["title"])
-        return archive.file_url(*k), {"kind": "ia", "watch": w, "title": title, "thumb": archive.thumb(k[0]),
-                                      "live": False, "dur": (f or {}).get("dur") or 0, "ia": k,
-                                      "home": "/archivio?id=" + k[0]}
     if parts[0] == "rai" and len(parts) == 2:
         p = raiplay.path_of_key(parts[1])
         if not p:
