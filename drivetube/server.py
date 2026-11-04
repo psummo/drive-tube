@@ -690,7 +690,13 @@ class Handler(BaseHTTPRequestHandler):
                 new_session(want, mode)
                 msg = "seek %.0f %s" % (state["seek_base"], mode)
             elif "pause" in q:
-                if not state["paused"]:
+                want = (q.get("want") or [""])[0]
+                pause = (not state["paused"]) if want not in ("pause", "play") else want == "pause"
+                if pause and state["paused"]:
+                    msg = "paused"
+                elif not pause and not state["paused"]:
+                    msg = "play"
+                elif pause:
                     state["seek_base"] = now_pos()
                     state["t_play"] = None
                     state["paused"] = True

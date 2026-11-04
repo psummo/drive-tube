@@ -316,6 +316,9 @@ print(search_yt("lofi"))
 
 ## Changelog
 
+### 15.25
+- **Play/pause react at once**: the player used to wait for the server's answer before pausing or resuming, which on the car's mobile connection (or with the browser busy decoding) could take seconds. Now it pauses/resumes immediately and tells the server in the background, with the wanted state (not a toggle) so the two cannot drift apart if a request is retried.
+
 ### 15.24
 - The Internet Archive section is gone.
 - **More default live TV lists**: besides the free Italian channels of Free-TV, iptv-org's Italian-language list (with the free Pluto TV, Samsung TV Plus and Rakuten TV channels for Italy), kids and world news. They are added once to existing setups; iptv-org's `[Geo-blocked]` channels are listed apart like Free-TV's Ⓖ ones.

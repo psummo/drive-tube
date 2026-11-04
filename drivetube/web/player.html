@@ -918,39 +918,34 @@ function togglePlay(){
   if (now - clickAt < 700) return;
   clickAt = now;
   if (go.style.display !== 'none') { startBoth(); return; }
-  fetch('/ctrl?pause=1').then(ck).then(function(r){ return r.text(); }).then(function(t){
-    if (t === 'paused') {
-      if (hs && hs.started && !stalled) hs.holdT = hClock();
-      userPaused = true;
-      stopClock();
-      if (actx && actx.state === 'running') actx.suspend();
-      showControls();
-      ui('pausa');
-    } else {
-      userPaused = false;
-      showControls(2500);
-      if (actx && actx.state === 'suspended') actx.resume();
-      flushHeldAudio();
-      startClock();
-      playOrigin = performance.now() - drawnT * 1000;
-      if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
-      ui('ripresa, buffer ' + frames.length);
-    }
-  }).catch(function(){
-    if (!userPaused && hs && hs.started && !stalled) hs.holdT = hClock();
-    userPaused = !userPaused;
-    if (userPaused) {
-      stopClock();
-      if (actx && actx.state === 'running') actx.suspend();
-      showControls();
-    } else {
-      showControls(2500);
-      if (actx && actx.state === 'suspended') actx.resume();
-      flushHeldAudio();
-      startClock();
-      playOrigin = performance.now() - drawnT * 1000;
-      if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
-    }
+  // La pausa (e la ripresa) si applica subito qui; il server lo sa dopo, in
+  // sottofondo. Prima si aspettava la sua risposta: con la rete lenta dell'auto,
+  // o il browser occupato a decodificare, passavano anche diversi secondi
+  var want = userPaused ? 'play' : 'pause';
+  if (want === 'pause') {
+    if (hs && hs.started && !stalled) hs.holdT = hClock();
+    userPaused = true;
+    stopClock();
+    if (actx && actx.state === 'running') actx.suspend();
+    showControls();
+    ui('pausa');
+  } else {
+    userPaused = false;
+    showControls(2500);
+    if (actx && actx.state === 'suspended') actx.resume();
+    flushHeldAudio();
+    startClock();
+    playOrigin = performance.now() - drawnT * 1000;
+    if (hs && hs.holdT != null && !stalled) { playOrigin = performance.now() - (hs.holdT - hs.X) * 1000; hs.holdT = null; hs.clk = null; }
+    ui('ripresa, buffer ' + frames.length);
+  }
+  sendPause(want, 0);
+}
+// stato voluto (non "inverti"): se una richiesta si perde e si riprova, il
+// server non finisce nello stato opposto a quello del player
+function sendPause(want, n){
+  fetch('/ctrl?pause=1&want=' + want, {keepalive: true}).then(ck).catch(function(){
+    if (n < 2 && (userPaused ? 'pause' : 'play') === want) setTimeout(function(){ sendPause(want, n + 1); }, 1500);
   });
 }
 // ================= H.264 =================
