@@ -4,6 +4,8 @@
 <title>__TITLE__</title>
 <style>
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:sans-serif}
+  /* niente zoom col doppio tocco, niente selezione o menu col tocco lungo: servono ai gesti */
+  canvas,#overlay{touch-action:manipulation;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
   #screen,#hscreen{width:100%;height:100%;object-fit:contain;background:#000;display:none}
   #overlay{
     position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
@@ -1553,6 +1555,7 @@ var SETTINGS = __OPTS__;
 function stageClick(ev){
   if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #fitbtn, #fsbtn, #nexts, #prog, #pp')) return;
   if (go.style.display !== 'none') return;
+  if (gestureClick(ev)) return;
   if (userPaused) { showControls(); return; }
   if (chromeOn) hideControls(); else showControls();
 }
@@ -1650,6 +1653,111 @@ document.getElementById('menu').addEventListener('click', function(ev){
   side.className = open ? 'on' : '';
   if (open) drawCfg();
 }, true);
+// ================= gesti sul video =================
+// Doppio tocco a destra: avanti di SKIP secondi; a sinistra: indietro. Ogni tocco
+// rapido in piu' aggiunge altri SKIP secondi; il salto parte quando smetti di
+// toccare. Tenere premuto: avanti veloce, sempre piu' veloce finche' tieni; al
+// rilascio si salta al punto raggiunto. Niente gesti nelle dirette.
+var fx = document.createElement('div');
+fx.style.cssText = 'position:fixed;top:50%;transform:translateY(-50%);z-index:30;display:none;' +
+  'background:rgba(0,0,0,.65);color:#fff;font:bold 30px sans-serif;padding:18px 26px;border-radius:18px;pointer-events:none;text-align:center';
+document.body.appendChild(fx);
+var gTap = {t: 0, x: 0, n: 0, dir: 0, add: 0, timer: null};
+var gHold = {timer: null, tick: null, on: false, add: 0, x: 0, y: 0, until: 0};
+function skipStep(){ return (cfgNow && cfgNow.SKIP) || 10; }
+function gestOk(ev){
+  if (IS_LIVE || !DURATION) return false;
+  if (go.style.display !== 'none') return false;
+  return !(ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #fitbtn, #fsbtn, #nexts, #prog, #pp, #takeback'));
+}
+function fxShow(side, text){
+  fx.style.left = side < 0 ? '8%' : side > 0 ? 'auto' : '50%';
+  fx.style.right = side > 0 ? '8%' : 'auto';
+  fx.style.transform = side === 0 ? 'translate(-50%,-50%)' : 'translateY(-50%)';
+  fx.textContent = text;
+  fx.style.display = 'block';
+}
+function fxHide(){ fx.style.display = 'none'; }
+function jumpBy(sec){
+  var to = Math.max(0, Math.min(DURATION - 3, Math.floor(pos + sec)));
+  pos = to;
+  draw();
+  ui('salto di ' + sec + 's a ' + to + 's');
+  ensureCtx().then(function(){ beginAt(to); });
+}
+// doppio tocco: true se il tocco e' stato usato dal gesto
+function gestureClick(ev){
+  if (Date.now() < gHold.until) return true;     // fine di un "tieni premuto"
+  if (!gestOk(ev)) return false;
+  var now = Date.now(), w = window.innerWidth, x = ev.clientX;
+  var dir = x > w * 0.6 ? 1 : x < w * 0.4 ? -1 : 0;
+  var chain = gTap.n > 0 && now - gTap.t < 600 && dir !== 0 && dir === gTap.dir;
+  gTap.t = now;
+  if (!chain) {
+    gTap.n = 1; gTap.dir = dir; gTap.add = 0;
+    return false;                                 // primo tocco: comportamento normale
+  }
+  if (gTap.n === 1) {
+    // il primo tocco aveva mostrato o nascosto i comandi: si torna come prima
+    if (chromeOn) hideControls(); else showControls();
+  }
+  gTap.n++;
+  gTap.add += dir * skipStep();
+  fxShow(dir, (dir > 0 ? '\u23e9 +' : '\u23ea ') + gTap.add + ' s');
+  clearTimeout(gTap.timer);
+  gTap.timer = setTimeout(function(){
+    var add = gTap.add;
+    gTap.n = 0; gTap.add = 0;
+    fxHide();
+    if (add) jumpBy(add);
+  }, 650);
+  return true;
+}
+function holdStart(ev){
+  if (!gestOk(ev) || (ev.button !== undefined && ev.button !== 0)) return;
+  gHold.x = ev.clientX; gHold.y = ev.clientY; gHold.add = 0; gHold.on = false;
+  clearTimeout(gHold.timer);
+  gHold.timer = setTimeout(function(){
+    gHold.on = true;
+    var t0 = Date.now();
+    var step = function(){
+      var held = (Date.now() - t0) / 1000;
+      // 2 s per scatto il primo secondo e mezzo, poi 5, 15, 30: un minuto si fa
+      // in un paio di secondi, dieci minuti in poco piu' di cinque
+      gHold.add += held < 1.5 ? 2 : held < 4 ? 5 : held < 7 ? 15 : 30;
+      gHold.add = Math.min(gHold.add, Math.max(0, DURATION - 3 - pos));
+      fxShow(0, '\u23e9 +' + fmt(gHold.add) + '  \u2192  ' + fmt(pos + gHold.add));
+    };
+    step();
+    gHold.tick = setInterval(step, 250);
+  }, 450);
+}
+function holdMove(ev){
+  if (!gHold.timer || gHold.on) return;
+  if (Math.abs(ev.clientX - gHold.x) > 25 || Math.abs(ev.clientY - gHold.y) > 25) holdCancel();
+}
+function holdCancel(){
+  clearTimeout(gHold.timer); gHold.timer = null;
+  clearInterval(gHold.tick); gHold.tick = null;
+  if (gHold.on) fxHide();
+  gHold.on = false;
+}
+function holdEnd(){
+  var was = gHold.on, add = gHold.add;
+  holdCancel();
+  if (was) {
+    gHold.until = Date.now() + 500;              // il "click" che segue il rilascio non conta
+    if (add > 0) jumpBy(add);
+  }
+}
+[mjCanvas, hCanvas, overlay].forEach(function(el){
+  el.addEventListener('pointerdown', holdStart);
+  el.addEventListener('pointermove', holdMove);
+  el.addEventListener('pointerup', holdEnd);
+  el.addEventListener('pointercancel', holdCancel);
+  el.addEventListener('pointerleave', holdEnd);
+  el.addEventListener('contextmenu', function(ev){ ev.preventDefault(); });   // niente menu del tocco lungo
+});
 function seekAt(ev){
   if (!DURATION || IS_LIVE) return;
   var x = ev.clientX;

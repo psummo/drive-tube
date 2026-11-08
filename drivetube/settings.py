@@ -33,9 +33,12 @@ def apply_settings(header):
     new = settings_from_cookie(header)
     if new == s.cfg:
         return False
-    s.cfg = new
+    old, s.cfg = s.cfg, new
     print("impostazioni:", new, flush=True)
-    return True
+    # le impostazioni solo della pagina (diagnostica, doppio tocco) non chiedono
+    # di riaprire lo stream
+    ui_only = ("DIAG", "SKIP")
+    return any(new.get(k) != (old or {}).get(k) for k in new if k not in ui_only)
 
 
 def C(key):

@@ -31,6 +31,9 @@ SETTINGS = [
      [(32, "32k"), (48, "48k"), (64, "64k"), (96, "96k"), (128, "128k"), (192, "192k")]),
     ("AUDIO_BUFFER_SEC", "Buffer audio", "Secondi di audio caricati prima di partire.", 4,
      [(2, "2 s"), (4, "4 s"), (8, "8 s"), (15, "15 s")]),
+    ("SKIP", "Doppio tocco", "Secondi di salto con due tocchi rapidi sul video: a destra avanti, "
+     "a sinistra indietro. Ogni tocco in piu' aggiunge altrettanto. Tenendo premuto si va avanti veloce.", 10,
+     [(10, "10 s"), (20, "20 s"), (30, "30 s")]),
     ("DIAG", "Diagnostica", "Riquadro in alto a sinistra con lo stato di video, rete e audio, "
      "per capire cosa succede quando qualcosa non va.", 0,
      [(0, "Nascosta"), (1, "Visibile")]),
