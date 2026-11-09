@@ -465,6 +465,8 @@ function scheduleBuf(buf){
     if (i >= 0) audioSources.splice(i, 1);
     src.disconnect();
   };
+  src.dtT = audioCursor;    // inizio del blocco nel video (s da X): serve ai salti nel buffer
+  src.dtBuf = buf;
   try {
     src.start(when, Math.min(skip, Math.max(0, buf.duration - 0.001))); audioSources.push(src);
     aDiag.sched++;
@@ -644,8 +646,15 @@ function audioShouldRun(){
 });
 var audioHold = [];
 var audioSources = [];
+// MP3 ricevuto ma non ancora decodificato: {bytes, dropHead, dropTail, dur, t}
+// (t = inizio nel video, in s da X). Si tiene fino a ~2 minuti avanti come il
+// video, cosi' un salto in avanti dentro quel tratto non ricarica niente.
+var aq = [], aqEnd = 0, aqBusy = false, aqPump = null, aqDecode = null;
+var A_AHEAD = 125;
 var audioArm = null;
 function stopAudio(){
+  aq = []; aqEnd = 0; aqBusy = false; aqDecode = null;
+  if (aqPump) { clearInterval(aqPump); aqPump = null; }
   audioOn = false;
   audioArm = null;
   if (audioAbort) { audioAbort.abort(); audioAbort = null; }
@@ -735,7 +744,8 @@ function mp3Take(st, chunk, last){
   var body = u.subarray(starts[0], o);
   var bytes = st.pre.length ? concatU8(st.pre, body) : body.slice();
   var fdur = st.spf / st.sr;
-  var blk = {bytes: bytes, dropHead: st.npre * fdur, dropTail: last ? 0 : fdur, sr: st.sr};
+  var blk = {bytes: bytes, dropHead: st.npre * fdur, dropTail: last ? 0 : fdur, sr: st.sr,
+             dur: (last ? n : n - 1) * fdur};
   // prossimo prefisso: ultimi MP3_PRE frame usati
   var usedStarts = last ? starts : starts.slice(0, n - 1);
   var k = Math.min(MP3_PRE, usedStarts.length);
@@ -778,11 +788,14 @@ function playAudioStream(url){
     aDiag.kb = 0; aDiag.blk = 0; aDiag.err = 0; aDiag.sched = 0; aDiag.firstData = false; aDiag.firstSched = false;
     var reader = res.body.getReader();
     var st = mp3Chunker();
+    aq = []; aqEnd = 0; aqBusy = false;
     function decodeBlk(blk){
       var b = blk.bytes;
       return actx.decodeAudioData(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)).then(function(buf){
         if (ctrl.signal.aborted || my !== gen) return;
         aDiag.blk++;
+        // blocco rimasto prima del punto di un salto nel buffer: non serve piu'
+        if (audioArm && blk.t + blk.dur / 2 < audioCursor) return;
         var t = mp3Trim(actx, buf, blk.dropHead, blk.dropTail);
         if (t) scheduleBuf(t);
       }).catch(function(e){
@@ -790,17 +803,33 @@ function playAudioStream(url){
         if (aDiag.err <= 2) ui('audio: decodifica fallita (' + (e && e.message ? e.message : e) + ')');
       });
     }
-    // decodifica in ordine tutti i blocchi pronti
+    // si decodifica (e si programma) solo l'audio dei prossimi ~8 secondi: il
+    // resto resta compresso in coda, pronto per un salto in avanti
+    function pump(){
+      if (aqBusy || !aq.length || ctrl.signal.aborted || my !== gen || !actx) return;
+      var armed = audioArm && actx;
+      if (armed ? (syncOrigin + audioCursor) - actx.currentTime > 8 : audioHold.length >= 3) return;
+      aqBusy = true;
+      var blk = aq.shift();
+      decodeBlk(blk).then(function(){ aqBusy = false; pump(); });
+    }
+    aqDecode = pump;
+    if (aqPump) clearInterval(aqPump);
+    aqPump = setInterval(pump, 200);
     function drain(chunk, last){
-      var blk = mp3Take(st, chunk, last);
-      if (!blk) return Promise.resolve();
-      return decodeBlk(blk).then(function(){
-        if (last || ctrl.signal.aborted || my !== gen) return;
-        return drain(null, false);
-      });
+      var blk;
+      while ((blk = mp3Take(st, chunk, last))) {
+        blk.t = aqEnd;
+        aqEnd += blk.dur;
+        aq.push(blk);
+        chunk = null;
+        if (last) break;
+      }
+      pump();
+      return Promise.resolve();
     }
     function read(){
-      if (actx && audioNext - actx.currentTime > 8) {
+      if (aqEnd - Math.max(0, actx ? actx.currentTime - syncOrigin : 0) > A_AHEAD && audioArm) {
         return new Promise(function(ok){ setTimeout(ok, 300); }).then(read);
       }
       return reader.read().then(function(r){
@@ -1094,6 +1123,7 @@ function hNew(X){
     hs.outPts = pts;
     if (pts > prev && pts - prev > 0.004 && pts - prev < 0.2) hs.dur = pts - prev;
     if (pts < hs.X - hs.dur / 2) return;            // prima del punto di partenza
+    if (hs.skipTo && pts < hs.skipTo - hs.dur / 2) return;   // prima del punto di un salto nel buffer
     if (pts <= hs.shownPts + 0.001) return;          // gia' mostrato (ffmpeg ripartito)
     if (hs.started && hGL) {
       // tutti i frame finiscono in coda; hDue sceglie quello giusto per l'orologio
@@ -1680,10 +1710,74 @@ function fxShow(side, text){
 function fxHide(){ fx.style.display = 'none'; }
 function jumpBy(sec){
   var to = Math.max(0, Math.min(DURATION - 3, Math.floor(pos + sec)));
+  if (hJumpLocal(to)) { ui('salto di ' + sec + 's a ' + to + 's nel buffer'); return; }
   pos = to;
   draw();
   ui('salto di ' + sec + 's a ' + to + 's');
   ensureCtx().then(function(){ beginAt(to); });
+}
+// keyframe (da cui il decoder puo' ripartire) dentro un pacchetto Annex B
+function hIsKey(data, hevc){
+  var n = Math.min(data.length - 4, 4096);
+  for (var i = 0; i < n; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+      var b = data[i + 3];
+      if (hevc) { var t = (b >> 1) & 0x3f; if (t >= 16 && t <= 21) return true; }
+      else if ((b & 0x1f) === 5) return true;
+      i += 2;
+    }
+  }
+  return false;
+}
+// Salto in avanti dentro quello che e' gia' arrivato (video e audio): niente
+// nuova richiesta al server, si riparte dal keyframe giusto e si ri-programma
+// l'audio. false se il punto non e' nel buffer (allora si ricarica come prima).
+function hJumpLocal(target){
+  if (vmode !== 'h264' || !hs || !hs.started || IS_LIVE || !actx || !audioArm) return false;
+  var now = hClock(), off = target - hs.X;
+  if (target <= now + 1) return false;
+  if (target > hs.lastPts - 2) return false;                      // video non ancora arrivato
+  if (audioOn && aqEnd < off + 2) return false;                   // audio non ancora arrivato
+  var me = hs, hevc = me.codec === 'hevc';
+  // video: dall'ultimo keyframe prima del punto (se non e' gia' stato decodificato)
+  var k = -1;
+  for (var i = 0; i < me.pk.length && me.pk[i].pts <= target; i++) if (hIsKey(me.pk[i].data, hevc)) k = i;
+  if (k >= 0) {
+    me.pk = me.pk.slice(k);
+    if (hWasm.dec_init_codec) hWasm.dec_init_codec(hevc ? 1 : 0); else hWasm.dec_init();
+    me.outPts = -1e9;
+    me.flushed = false;
+  }
+  me.q = [];
+  me.skipTo = target;
+  var until = performance.now() + 1500;
+  while (me.outPts < target - me.dur && performance.now() < until) { if (!hDecodeNext()) break; }
+  // audio: si ferma quello programmato e si riparte dal punto, riusando i
+  // blocchi gia' decodificati che lo coprono e poi la coda compressa
+  var keep = [];
+  for (var j = 0; j < audioSources.length; j++) {
+    var src = audioSources[j];
+    try { src.onended = null; src.stop(); } catch (e) {}
+    if (src.dtBuf && src.dtT + src.dtBuf.duration > off) keep.push({t: src.dtT, buf: src.dtBuf});
+  }
+  audioSources = [];
+  audioHold = [];
+  while (aq.length && aq[0].t + aq[0].dur <= off) aq.shift();
+  keep.sort(function(a, b){ return a.t - b.t; });
+  // orologio: il punto scelto e' "adesso"
+  drawnT = off;
+  pos = target;
+  syncOrigin = actx.currentTime + 0.05 - off;
+  playOrigin = performance.now() + 50 - off * 1000;
+  me.clk = null; me.lagSince = 0; me.lastT = -1; me.frozenAt = 0;
+  if (userPaused || stalled) me.holdT = target;
+  audioCursor = keep.length ? keep[0].t : (aq.length ? aq[0].t : off);
+  for (var m = 0; m < keep.length; m++) scheduleBuf(keep[m].buf);
+  if (aqDecode) aqDecode();
+  // primo frame subito sullo schermo, anche in pausa
+  if (me.q.length) { var f = me.q.shift(); hDrawPlanes(f); hShown(f.pts); me.drewAt = performance.now(); }
+  draw();
+  return true;
 }
 // doppio tocco: true se il tocco e' stato usato dal gesto
 function gestureClick(ev){
@@ -1764,6 +1858,7 @@ function seekAt(ev){
   if (ev.changedTouches && ev.changedTouches[0]) x = ev.changedTouches[0].clientX;
   var r = document.getElementById('prog').getBoundingClientRect();
   var sec = Math.floor(Math.max(0, Math.min(DURATION, ((x - r.left) / r.width) * DURATION)));
+  if (hJumpLocal(sec)) { ui('salto a ' + sec + 's nel buffer'); return; }
   pos = sec;
   draw();
   ensureCtx().then(function(){ beginAt(sec); });
