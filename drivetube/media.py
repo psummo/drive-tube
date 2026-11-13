@@ -83,7 +83,11 @@ def pump_jpegs(gen, path):
                         if s > 0:
                             buf = buf[s:]
                         break
-                    state["v_q"].append(buf[s : e + 2])
+                    if state.get("v_drop", 0) > 0:
+                        # frame gia' mandati prima del riavvio di ffmpeg
+                        state["v_drop"] -= 1
+                    else:
+                        state["v_q"].append(buf[s : e + 2])
                     state["v_made"] += 1
                     buf = buf[e + 2 :]
                     state["v_evt"].set()
@@ -229,6 +233,9 @@ def pump_h264(gen, path):
 def h264_push(pts, data, last):
     if pts is None:
         pts = (last or 0.0) + 1.0 / 30
+    dd = state.get("v_dedupe")
+    if dd is not None and pts <= dd + 0.001:
+        return pts   # gia' mandato prima del riavvio di ffmpeg
     state["v_q"].append(struct.pack("<Id", len(data), pts) + data)
     state["v_made"] += 1
     mx = state.get("v_maxpts")

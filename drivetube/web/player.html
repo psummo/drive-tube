@@ -59,6 +59,7 @@
   .opts button{min-width:56px;height:40px;padding:0 12px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
   .opts button.on{background:#fff;color:#000}
   #resetcfg{width:100%;height:44px;margin-top:10px;border:0;border-radius:8px;background:#333;color:#fff;font-size:16px}
+  #resync{width:100%;height:44px;margin-top:10px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-size:16px}
   #logbox{white-space:pre-wrap;font:12px/1.4 monospace;color:#ddd}
   #nexts a, #nexts a:visited, #nexts a:hover{color:#fff;text-decoration:none}
   #repbox textarea{width:100%;box-sizing:border-box;font-size:16px;padding:8px;border-radius:8px;border:0;background:#222;color:#fff}
@@ -439,6 +440,12 @@ function sliceBuf(buf, skipSec){
 }
 function scheduleBuf(buf){
   if (!buf) return;
+  // un blocco andato perso (decodifica fallita) lascia un buco: si salta il buco
+  // invece di far suonare tutto il resto in anticipo rispetto al video
+  if (audioArm && actx && buf.dtStart != null && buf.dtStart > audioCursor + 0.05) {
+    ui('audio: buco di ' + (buf.dtStart - audioCursor).toFixed(2) + 's, mantengo la sincronia');
+    audioCursor = buf.dtStart;
+  }
   if (!audioArm || !actx) { if (audioHold.length < 120) { audioHold.push(buf); if (actx) audioNext = actx.currentTime + audioHold.reduce(function(s,b){ return s + b.duration; }, 0); } return; }
   var frameT = drawnT;
   if (audioCursor + 0.4 < frameT) {
@@ -797,7 +804,7 @@ function playAudioStream(url){
         // blocco rimasto prima del punto di un salto nel buffer: non serve piu'
         if (audioArm && blk.t + blk.dur / 2 < audioCursor) return;
         var t = mp3Trim(actx, buf, blk.dropHead, blk.dropTail);
-        if (t) scheduleBuf(t);
+        if (t) { t.dtStart = blk.t; scheduleBuf(t); }
       }).catch(function(e){
         aDiag.err++;
         if (aDiag.err <= 2) ui('audio: decodifica fallita (' + (e && e.message ? e.message : e) + ')');
@@ -1581,6 +1588,8 @@ overlay.onclick = function(ev){
   stageClick(ev);
 };
 var cfgNow = __CFG__;
+var cfgLoaded = JSON.parse(JSON.stringify(cfgNow));
+var CFG_UI_ONLY = ['DIAG', 'SKIP'];   // si applicano subito, senza ricaricare
 var SETTINGS = __OPTS__;
 function stageClick(ev){
   if (ev.target.closest && ev.target.closest('#side, #menu, #homebtn, #fitbtn, #fsbtn, #nexts, #prog, #pp')) return;
@@ -1620,9 +1629,32 @@ function drawCfg(){
   save.onclick = function(ev){
     ev.stopPropagation();
     saveCfgCookie();
+    var heavy = SETTINGS.some(function(f){ return CFG_UI_ONLY.indexOf(f.key) < 0 && cfgNow[f.key] !== cfgLoaded[f.key]; });
+    if (!heavy) {
+      // diagnostica e doppio tocco: niente ricarica, cosi' un problema in corso
+      // (video fuori sincrono, caricamenti) resta li' da osservare
+      cfgLoaded = JSON.parse(JSON.stringify(cfgNow));
+      if (cfgNow.DIAG !== 1) document.getElementById('hud').style.display = 'none';
+      document.getElementById('side').className = '';
+      ui('impostazioni applicate senza ricaricare: diagnostica ' + (cfgNow.DIAG === 1 ? 'visibile' : 'nascosta'));
+      return;
+    }
     box.innerHTML = '<p>salvo, riparto con le nuove impostazioni...</p>';
     location.reload();
   };
+  var rs = document.createElement('button');
+  rs.id = 'resync';
+  rs.type = 'button';
+  rs.textContent = 'Risincronizza audio e video';
+  rs.onclick = function(ev){
+    ev.stopPropagation();
+    document.getElementById('side').className = '';
+    if (IS_LIVE || !DURATION) { location.reload(); return; }
+    var at = Math.max(0, Math.floor(pos));
+    ui('risincronizza (richiesta) a ' + at + 's');
+    ensureCtx().then(function(){ beginAt(at); });
+  };
+  box.appendChild(rs);
   box.appendChild(save);
   var reset = document.createElement('button');
   reset.id = 'resetcfg';

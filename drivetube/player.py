@@ -476,9 +476,20 @@ def watch_ff(gen, p, pos, threads, tail):
     with lock:
         if state["gen"] != gen or state["ff"] is not None:
             return
-        askip = int(max(0.0, apos - made) * C("AUDIO_KBPS") * 1000 / 8)
-        print("riparto da %.1fs (audio avanti %.2fs)" % (made, max(0.0, apos - made)), flush=True)
-        spawn_ff(gen, made, urls[0], urls[1], askip)
+        start, askip = made, int(max(0.0, apos - made) * C("AUDIO_KBPS") * 1000 / 8)
+        if apos < made - 0.05:
+            # audio rimasto indietro rispetto al video (succede quando la rete si
+            # interrompe): prima si ripartiva dal video e il tratto di audio
+            # mancante spariva, cosi' da li' in poi il suono andava in anticipo
+            # sulle immagini. Ora si riparte dall'audio e il video gia' mandato
+            # si scarta (H.264: per tempo; MJPEG: contando i frame)
+            start, askip = apos, 0
+            if state["vmode"] == "h264":
+                state["v_dedupe"] = state.get("v_maxpts")
+            else:
+                state["v_drop"] = int(round((made - apos) * C("FPS")))
+        print("riparto da %.1fs (video a %.1fs, audio a %.1fs)" % (start, made, apos), flush=True)
+        spawn_ff(gen, start, urls[0], urls[1], askip)
 
 
 def start_ff():
@@ -501,6 +512,8 @@ def start_ff():
     state["ff_gen"] = gen
     state["fails"] = 0
     state["v_maxpts"] = None
+    state["v_dedupe"] = None
+    state["v_drop"] = 0
     pos = int(now_pos())
     net = state.get("net")
     lock.release()

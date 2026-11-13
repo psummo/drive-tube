@@ -246,7 +246,7 @@ Channels marked **Ⓖ** (Free-TV) or **[Geo-blocked]** (iptv-org) in the list ar
 How it plays: for an HLS playlist with several qualities the server picks the highest up to 720p (H.264 when the browser decodes it), with the separate audio track if there is one, and hands the URLs straight to ffmpeg (no yt-dlp, no chunk proxy). A live stream has no seek bar; if the connection drops, ffmpeg restarts from the current moment and the picture carries on. Netflix, Prime Video and similar services are not supported: their streams are DRM-protected.
 
 ## Player settings
-The gear icon (top left) opens the settings: video format (H.264 or MJPEG), resolution, frame rate and JPEG quality (these two for MJPEG only), audio quality, audio buffer, the double-tap jump and the diagnostics panel. In H.264 the resolution is capped at 720p. **Salva e applica** (save and apply) stores them in **browser cookies**: there is no configuration file on the server. Without cookies the defaults in the code apply (`SETTINGS` in `drivetube/config.py`). Recent searches are stored in a cookie too.
+The gear icon (top left) opens the settings: video format (H.264 or MJPEG), resolution, frame rate and JPEG quality (these two for MJPEG only), audio quality, audio buffer, the double-tap jump and the diagnostics panel. In H.264 the resolution is capped at 720p. **Salva e applica** (save and apply) stores them in **browser cookies**: there is no configuration file on the server. Changing only the diagnostics panel or the double-tap jump applies at once without reloading the page, so a problem in progress stays there to be observed; the other settings reload the player. **Risincronizza audio e video** (resync), in the same panel, restarts the stream from the current position without reloading the page. Without cookies the defaults in the code apply (`SETTINGS` in `drivetube/config.py`). Recent searches are stored in a cookie too.
 
 Tapping the video shows the suggestions, the home button, the picture-fit and full-screen buttons and a pause button in the middle; they hide after 5 seconds. While paused they stay visible.
 
@@ -320,6 +320,11 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.28
+- **Audio ahead of the picture after a network drop, fixed**: when the stream broke with the audio behind the video, ffmpeg restarted from the video position and the missing stretch of audio was simply lost, so from then on the sound ran ahead of the picture until the page was reloaded. Now it restarts from the audio position and drops the video already sent (by timestamp in H.264, by frame count in MJPEG). The log line shows both positions: `riparto da S (video a V, audio a A)`.
+- On the player, an audio block that fails to decode leaves a gap instead of moving all the following sound earlier.
+- The diagnostics panel (and the double-tap jump) can be switched on without reloading the page, and the settings panel has a **Risincronizza audio e video** button.
 
 ### 15.27
 - **Forward jumps inside the buffer** (double tap, touch and hold, progress bar) no longer reload: in H.264 the player keeps about two minutes of video and of compressed audio ahead and jumps there directly, restarting the decoder from the nearest keyframe. Audio is now decoded only for the next few seconds and kept compressed beyond that.
