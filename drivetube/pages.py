@@ -1,5 +1,6 @@
 """Pagine web (frontend): HTML, CSS e JavaScript stanno in drivetube/web/, qui si caricano."""
 import os
+from .recent import ROW_CSS
 
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -113,7 +114,7 @@ LOADER_HTML = "<style>" + LOADER_CSS + "</style>" + _loader_body(False)
 # barra in alto delle pagine di scelta (home, TV, YouTube, Twitch)
 NAV_CSS = (".nav{display:flex;gap:6px;align-items:center;padding:10px 12px;background:#000;position:sticky;top:0;z-index:5;overflow-x:auto}"
            ".nav a,.nav a:visited{color:#ddd;text-decoration:none;font-size:18px;padding:9px 14px;border-radius:10px;white-space:nowrap}"
-           ".nav a.on{background:#fff;color:#000}.nav .sp{flex:1}.nav a.sm{font-size:15px;color:#aaa}") + LOADER_CSS
+           ".nav a.on{background:#fff;color:#000}.nav .sp{flex:1}.nav a.sm{font-size:15px;color:#aaa}") + LOADER_CSS + ROW_CSS
 
 
 def nav(active, admin=False):

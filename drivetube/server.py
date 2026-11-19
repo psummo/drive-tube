@@ -100,6 +100,7 @@ from .player import (
     yt_here,
 )
 from . import explore, live, raiplay
+from .recent import cont_html, cont_pos, tv_html
 from .streamers import KICK, PLATFORMS, TWITCH
 from .update import check_update, install_update, restart_self
 from .report import delete_report, list_reports, read_report, save_report
@@ -451,7 +452,10 @@ class Handler(BaseHTTPRequestHandler):
                 '<a class="chip" href="/youtube?q=%s">%s</a>' % (quote(row), html.escape(row))
                 for row in recent
             )
-            body = with_nav(HOME_HTML, "yt", admin) % ("", chips, "".join(items))
+            # la riga "Continua a guardare" in cima, solo sulla pagina senza ricerca
+            top = "" if q else cont_html(self.headers.get("Cookie"))
+            # prima il % del modello, poi la barra (il suo CSS contiene dei %)
+            body = with_nav(HOME_HTML % ("", top, chips, "".join(items)), "yt", admin)
             print("home: pagina in %.1f s" % (time.time() - t0), flush=True)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -521,7 +525,9 @@ class Handler(BaseHTTPRequestHandler):
             if not vid or not open_watch(vid):
                 self.redirect("/home")
                 return
-            self.redirect("/?watch=" + quote(vid))
+            # un video YouTube lasciato a meta' riparte da dove era rimasto
+            sec = cont_pos(self.headers.get("Cookie"), vid)
+            self.redirect("/?watch=" + quote(vid) + ("&t=%d" % sec if sec else ""))
             return
 
         if path == "/next":
@@ -935,14 +941,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def landing(self):
         src = cur().src or {}
+        hdr = self.headers.get("Cookie")
+        rows = cont_html(hdr) + tv_html(hdr)
         resume = ""
-        if cur().url and src.get("watch"):
+        # "Riprendi" solo se quello aperto non e' gia' nelle righe qui sotto
+        if cur().url and src.get("watch") and "watch=%s&" % quote(src["watch"]) not in rows \
+                and "watch?v=%s\"" % quote(src["watch"]) not in rows:
             title = state.get("title") or {"m3u": "canale TV", "stream": "diretta", "rai": "RaiPlay"}.get(src.get("kind"), "video")
             thumb = src.get("thumb") or ""
             resume = ('<a class="resume" href="/?watch=%s">%s<div><small>Riprendi</small><b>%s</b></div></a>'
                       % (quote(src["watch"]), '<img src="%s" alt="">' % html.escape(thumb) if thumb else "",
                          html.escape(title)))
-        return with_nav(LANDING_HTML, "home", self.who == "admin").replace("__RESUME__", resume)
+        return with_nav(LANDING_HTML, "home", self.who == "admin").replace("__RESUME__", resume + rows)
 
     def live_page(self, q):
         lists = live.m3u_lists()
@@ -966,7 +976,7 @@ class Handler(BaseHTTPRequestHandler):
                            pic, "&#9654; " if r.get("vod") else "", html.escape(r["name"])))
             free = [r for r in rows if not r["geo"]]
             geo = [r for r in rows if r["geo"]]
-            out = []
+            out = [tv_html(self.headers.get("Cookie"))]
             if err and not rows:
                 out.append('<p class="err">Lista non disponibile: %s</p>' % html.escape(err))
             elif err:

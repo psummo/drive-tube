@@ -316,6 +316,50 @@ if (MS_TEST) {
   setTimeout(msUpdate, 2500);
 }
 pollTitle();
+// "Continua a guardare" e "Ultimi visti": li ricorda solo questo browser, nei
+// cookie yt_cont (id~secondo~durata, separati da ".") e tv_seen (separati da "!").
+// Le righe in cima alle pagine le disegna il server leggendo questi cookie.
+var CONT_MAX = 12, TV_MAX = 10, contSaved = -1, tvSecs = 0;
+function ckGet(n){
+  var m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+function ckSet(n, v){ document.cookie = n + '=' + encodeURIComponent(v) + '; max-age=31536000; path=/; samesite=lax'; }
+// nome e copertina per le schede delle righe: in localStorage, solo per quello che e' nei cookie
+function saveName(){
+  var t = document.title;
+  if (!t || t === 'drive-tube') return;
+  try {
+    var m = JSON.parse(localStorage.getItem('dt_names') || '{}');
+    if (m[VID] && m[VID].t === t) return;
+    var keep = {};
+    ckGet('yt_cont').split('.').map(function(x){ return x.split('~')[0]; }).concat(ckGet('tv_seen').split('!'))
+      .forEach(function(k){ if (k && m[k]) keep[k] = m[k]; });
+    keep[VID] = {t: t.slice(0, 200), p: KIND === 'yt' ? '' : (THUMB || '')};
+    localStorage.setItem('dt_names', JSON.stringify(keep));
+  } catch (e) {}
+}
+function saveCont(force){
+  if (KIND !== 'yt' || IS_LIVE || !/^[A-Za-z0-9_-]{11}$/.test(VID)) return;
+  var p = Math.floor(pos);
+  if (!force && Math.abs(p - contSaved) < 5) return;
+  contSaved = p;
+  var rows = ckGet('yt_cont').split('.').filter(function(x){ return x && x.split('~')[0] !== VID; });
+  // finito (ultimi 30 s o oltre il 95%): esce dalla riga; appena iniziato: non entra
+  var done = DURATION > 0 && (p >= DURATION - 30 || p >= DURATION * 0.95);
+  var keep = !done && p >= 10;
+  if (keep) rows.unshift(VID + '~' + p + '~' + Math.floor(DURATION || 0));
+  ckSet('yt_cont', rows.slice(0, CONT_MAX).join('.'));
+  if (keep) saveName();
+}
+function saveTv(){
+  // canali delle liste M3U e dirette RaiPlay, dopo 10 s di visione (non nello zapping)
+  if (!IS_LIVE || ++tvSecs !== 10 || !/^(tv\.[A-Za-z0-9_-]+\.[0-9a-f]{8}|rail\.[a-z0-9]+)$/.test(VID)) return;
+  var rows = ckGet('tv_seen').split('!').filter(function(x){ return x && x !== VID; });
+  rows.unshift(VID);
+  ckSet('tv_seen', rows.slice(0, TV_MAX).join('!'));
+  saveName();
+}
 function startClock(){
   playing = true;
   if (tick) clearInterval(tick);
@@ -325,6 +369,8 @@ function startClock(){
     draw();
     if (!IS_LIVE) history.replaceState(null, '', '/?watch=' + VID + '&t=' + Math.floor(pos));
     msState();
+    saveCont(false);
+    saveTv();
   }, 1000);
 }
 function stopClock(){ playing = false; }
@@ -1900,7 +1946,16 @@ document.getElementById('prog').ontouchend = function(ev){ ev.preventDefault(); 
 draw();
 preload();
 window.addEventListener('pagehide', function(){
+  if (playing || pos > 0) saveCont(true);
   fetch('/bye', {keepalive: true}).catch(function(){});
+});
+// il tocco su un link (Home, suggeriti) parte prima di pagehide: si salva subito,
+// cosi' la pagina dopo ha gia' il secondo giusto
+document.addEventListener('click', function(ev){
+  if (ev.target.closest && ev.target.closest('a') && (playing || pos > 0)) saveCont(true);
+}, true);
+document.addEventListener('visibilitychange', function(){
+  if (document.visibilityState === 'hidden' && (playing || pos > 0)) saveCont(true);
 });
 function loadNext(){
   fetch('/next').then(function(r){ return r.json(); }).then(function(list){
