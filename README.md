@@ -227,7 +227,7 @@ You need a domain name pointing to the machine (a free [DuckDNS](https://www.duc
 Port and paths can be changed with `YT_HTTPS_PORT`, `YT_CERT` and `YT_KEY`.
 
 ## Home: live TV, YouTube, Twitch
-After login, `/home` shows a tile for each section, plus *Riprendi* (resume) for whatever was playing. Each section has its own page, and a bar at the top of every page switches between them:
+After login, `/home` shows a tile for each section, plus *Riprendi* (resume) for whatever was playing. Each section has its own page, and a bar at the top of every page switches between them Tapping a link, a tile or a section of the bar (or sending a search) shows at once that the page is loading: a moving blue line at the top, the tapped item outlined and, after a moment, a spinner in the middle. Some pages take a few seconds on the server (Twitch/Kick live lists, YouTube, RaiPlay), and without it you could not tell whether the tap had been taken. The same indicator appears when leaving the player and on the search and channel pages; it goes away by itself when you come back with the browser's back button:
 - **`/live`, TV in diretta**: channels from one or more M3U playlists, with their logos and a search box. The player's home button goes back to the channel list, and tapping the video shows the next channels of the same list, for quick zapping.
 - **`/youtube`**: the YouTube home as before (search, recent searches, suggestions, subscriptions). Old `/home?q=...` links still work.
 - **`/raiplay`**: RaiPlay's home rows, the genres (Italian series, films, international series, programmes, documentaries, kids, teen, sport, music and theatre), search by programme name, a programme's seasons and episodes, and the RaiPlay live channels. The catalogue is read from raiplay.it's public JSON pages, the videos are played through yt-dlp. Tapping the video offers the next episodes of the same season. Much of RaiPlay is visible only from Italy (the player says so instead of showing RaiPlay's "not available" clip), and DRM-protected titles cannot be played.
@@ -320,6 +320,9 @@ print(search_yt("lofi"))
 **You do not need the `wasm/` folder to use or host drive-tube.** The compiled decoder is already in `drivetube/web/h264.wasm` (served compressed to the browser as `/h264.wasm`). The folder is in the repository only so the decoder can be audited and rebuilt. Do this only if you want to change or update the decoder: `wasm/build.sh` needs clang/lld (15 or later), cmake, ninja, make, git and python3, downloads FFmpeg n7.1 and works in `wasm/.build/` (ignored by git).
 
 ## Changelog
+
+### 15.29
+- **Loading indicator when changing page**: switching between sections (TV, YouTube, RaiPlay, Twitch, Kick), opening a channel, a programme or a video, or sending a search used to show nothing until the next page arrived, so you could not tell whether the tap had been taken. Now a blue line runs along the top at once, the tapped item is outlined and after a moment a spinner appears in the middle. It also covers the player's home button and next items, the search and channel pages, and disappears when coming back with the back button.
 
 ### 15.28
 - **Audio ahead of the picture after a network drop, fixed**: when the stream broke with the audio behind the video, ffmpeg restarted from the video position and the missing stretch of audio was simply lost, so from then on the sound ran ahead of the picture until the page was reloaded. Now it restarts from the audio position and drops the video already sent (by timestamp in H.264, by frame count in MJPEG). The log line shows both positions: `riparto da S (video a V, audio a A)`.
