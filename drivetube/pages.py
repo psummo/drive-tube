@@ -69,27 +69,46 @@ LOADER_CSS = ("#dtload{position:fixed;left:0;right:0;top:0;bottom:0;z-index:2147
               "@keyframes dtspin{to{transform:rotate(360deg)}}"
               "@keyframes dtshow{to{opacity:1}}")
 
-LOADER_BODY = ('<div id="dtload"><i></i><b></b></div><script>(function(){'
-               'var L=document.getElementById("dtload"),busy=null,tmo=0;'
-               'function off(){L.className="";if(busy){busy.classList.remove("dtbusy");busy=null}clearTimeout(tmo)}'
-               'function on(el){L.className="on";if(el&&el.classList){busy=el;el.classList.add("dtbusy")}'
-               'clearTimeout(tmo);tmo=setTimeout(off,60000)}'
-               'window.dtLoading=on;'
-               'document.addEventListener("click",function(ev){'
-               'if(ev.defaultPrevented||ev.button||ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.altKey)return;'
-               'var a=ev.target.closest&&ev.target.closest("a[href]");'
-               'if(!a||(a.target&&a.target!="_self")||a.hasAttribute("download"))return;'
-               'var h=a.getAttribute("href");if(!h||h.charAt(0)=="#"||/^javascript:/i.test(h))return;'
-               'if(a.origin!==location.origin)return;'
-               'if(a.pathname==location.pathname&&a.search==location.search&&a.hash)return;'
-               'on(a)});'
-               'document.addEventListener("submit",function(ev){'
-               'var f=ev.target;if(ev.defaultPrevented||(f.target&&f.target!="_self"))return;'
-               'on(f.querySelector("button,[type=submit]"))});'
-               'window.addEventListener("pageshow",off);'
-               '})();</script>')
+# Il loader resta acceso anche mentre la pagina aspetta le sue richieste
+# (fetch/XMLHttpRequest): per esempio /youtube che chiede i suggerimenti a
+# /home/more, o Twitch/Kick che chiedono chi e' in diretta. Lo fa solo nelle
+# pagine con la barra in alto: il player ha richieste continue (stream, /ctrl).
+# Una richiesta che non deve accenderlo (es. un controllo periodico) passa
+# {dtQuiet:true} tra le opzioni di fetch.
+def _loader_body(track):
+    return ('<div id="dtload"><i></i><b></b></div><script>(function(){'
+            'var L=document.getElementById("dtload"),busy=null,going=false,pend=0,tmo=0;'
+            'function draw(){var v=going||pend>0;if((L.className=="on")!=v)L.className=v?"on":""}'
+            'function unmark(){if(busy){busy.classList.remove("dtbusy");busy=null}}'
+            'function off(){going=false;unmark();clearTimeout(tmo);draw()}'
+            'function on(el){going=true;unmark();if(el&&el.classList){busy=el;el.classList.add("dtbusy")}'
+            'clearTimeout(tmo);tmo=setTimeout(off,60000);draw()}'
+            'window.dtLoading=on;'
+            + ('function done(){pend=Math.max(0,pend-1);draw()}'
+               'if(window.fetch){var F=window.fetch;window.fetch=function(u,o){'
+               'if(o&&o.dtQuiet)return F.apply(this,arguments);'
+               'pend++;draw();var r=F.apply(this,arguments);r.then(done,done);return r}}'
+               'var XS=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){'
+               'pend++;draw();this.addEventListener("loadend",done);return XS.apply(this,arguments)};'
+               if track else '') +
+            'document.addEventListener("click",function(ev){'
+            'if(ev.defaultPrevented||ev.button||ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.altKey)return;'
+            'var a=ev.target.closest&&ev.target.closest("a[href]");'
+            'if(!a||(a.target&&a.target!="_self")||a.hasAttribute("download"))return;'
+            'var h=a.getAttribute("href");if(!h||h.charAt(0)=="#"||/^javascript:/i.test(h))return;'
+            'if(a.origin!==location.origin)return;'
+            'if(a.pathname==location.pathname&&a.search==location.search&&a.hash)return;'
+            'on(a)});'
+            'document.addEventListener("submit",function(ev){'
+            'var f=ev.target;if(ev.defaultPrevented||(f.target&&f.target!="_self"))return;'
+            'on(f.querySelector("button,[type=submit]"))});'
+            'window.addEventListener("pageshow",off);'
+            '})();</script>')
 
-LOADER_HTML = "<style>" + LOADER_CSS + "</style>" + LOADER_BODY
+
+LOADER_BODY = _loader_body(True)
+
+LOADER_HTML = "<style>" + LOADER_CSS + "</style>" + _loader_body(False)
 
 # barra in alto delle pagine di scelta (home, TV, YouTube, Twitch)
 NAV_CSS = (".nav{display:flex;gap:6px;align-items:center;padding:10px 12px;background:#000;position:sticky;top:0;z-index:5;overflow-x:auto}"
