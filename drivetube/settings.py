@@ -63,5 +63,21 @@ def push_recent(q, rows):
     return ([q] + [x for x in rows if x.lower() != q.lower()])[:10]
 
 
+def watched_from_cookie(header):
+    """Ultimi video YouTube guardati da questo browser (solo id), il piu' recente per primo."""
+    rows = (cookie_value(header, "yt_seen") or "").split(".")
+    return [x for x in rows if len(x) == 11][:30]
+
+
+def push_watched(vid, rows):
+    if not vid or len(vid) != 11:
+        return rows
+    return ([vid] + [x for x in rows if x != vid])[:30]
+
+
+def watched_cookie_header(rows):
+    return "yt_seen=%s; Max-Age=31536000; Path=/; SameSite=Lax; HttpOnly" % ".".join(rows)
+
+
 def recent_cookie_header(rows):
     return "yt_recent=%s; Max-Age=31536000; Path=/; SameSite=Lax" % quote(json.dumps(rows, ensure_ascii=False), safe="")

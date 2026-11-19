@@ -3,12 +3,14 @@ import hmac
 import html
 import json
 import os
+import random
 import re
 import secrets
 import ssl
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -33,8 +35,11 @@ from .settings import (
     apply_settings,
     cookie_value,
     push_recent,
+    push_watched,
     recent_cookie_header,
     recent_from_cookie,
+    watched_cookie_header,
+    watched_from_cookie,
 )
 from .access import (
     ACCESS,
@@ -63,6 +68,7 @@ from .youtube import (
     cookies_youtube_only,
     related_of,
     search_yt,
+    similar_to,
     yt_cmd,
     yt_net_label,
 )
@@ -146,14 +152,46 @@ _more_jobs = {}          # (sessione, ricerca) -> (quando, future)
 _more_lock = threading.Lock()
 
 
-def home_more_html(q, recent, here):
+def _pick(rows, fresh, old):
+    """Alcuni video a caso tra i piu' recenti di un elenco e altri tra i piu' vecchi,
+    cosi' la home non mostra sempre i primi della lista."""
+    rows = list(rows)
+    cut = max(fresh * 2, len(rows) // 4)
+    head, tail = rows[:cut], rows[cut:]
+    out = random.sample(head, min(fresh, len(head))) + random.sample(tail, min(old, len(tail)))
+    random.shuffle(out)
+    return out
+
+
+def _one_of(rows, recent_n=5):
+    """Un elemento a caso: meta' delle volte tra i primi, meta' tra i piu' vecchi."""
+    if not rows:
+        return None
+    if len(rows) > recent_n and random.random() < 0.5:
+        return random.choice(rows[recent_n:])
+    return random.choice(rows[:recent_n])
+
+
+HOME_SHOWN_MAX = 240     # video gia' mostrati in cima nelle ultime aperture della home
+
+
+def home_more_html(q, recent, here, watched=()):
     t0 = time.time()
     seen = set()
     found_channels = []  # (cid, name)
-    shown_q = []
+    # ricerche recenti: le 2 ultime sempre, piu' 3 a caso tra le piu' vecchie
+    older_q = []
     for query in recent:
-        if query != q and query not in shown_q and len(shown_q) < 6:
-            shown_q.append(query)
+        if query != q and query not in older_q:
+            older_q.append(query)
+    shown_q = older_q[:2] + random.sample(older_q[2:], min(3, len(older_q[2:])))
+    # video guardati prima su questo browser: uno degli ultimi e uno piu' vecchio
+    past = [v for v in watched if v != here]
+    seeds = []
+    if past:
+        seeds.append(random.choice(past[:5]))
+        if len(past) > 5:
+            seeds.append(random.choice(past[5:]))
     show_personal = use_cookies() and home_feed() == "personal"
     with ThreadPoolExecutor(max_workers=8) as pool:
         # la ricerca appena fatta va in parallelo con il resto (la pagina la sta
@@ -161,16 +199,23 @@ def home_more_html(q, recent, here):
         q_future = pool.submit(in_session(search_yt), q) if q else None
         search_futures = {query: pool.submit(in_session(search_yt), query) for query in shown_q}
         related_future = pool.submit(in_session(related_of), here) if here else None
+        seed_futures = [pool.submit(in_session(related_of), v) for v in seeds]
         account_future = pool.submit(in_session(account_sections)) if show_personal else None
+        account = dict(account_future.result()) if account_future else {}
+        # dal proprio account: video simili a un "Mi piace" e a uno della
+        # cronologia scelti a caso, anche lontani nel tempo
+        for name in ("Mi piace", "Cronologia"):
+            got = _one_of(account.get(name) or [], 10)
+            if got:
+                seed_futures.append(pool.submit(in_session(similar_to), got[0], got[1]))
     for vid, title, kind, url in (q_future.result() if q_future else []):
         if kind == "channel":
             found_channels.append((url or vid, title))
         else:
             seen.add(vid)
-    # tutto mescolato a turno, cosi' i suggeriti finiscono in mezzo agli altri video
+    # tutto mescolato a turno, cosi' i suggeriti finiscono in mezzo agli altri video;
+    # l'ordine delle fonti cambia ogni volta (i simili al video in corso restano primi)
     sources = []
-    if here and related_future:
-        sources.append(related_future.result())
     for query in shown_q:
         rows = []
         for vid, title, kind, url in search_futures[query].result():
@@ -178,44 +223,66 @@ def home_more_html(q, recent, here):
                 found_channels.append((url or vid, title))
             else:
                 rows.append((vid, title))
-        sources.append(rows)
+        sources.append(_pick(rows, 4, 4))
+    for fut in seed_futures:
+        try:
+            sources.append(_pick(fut.result(), 3, 3))
+        except Exception:
+            pass
     if found_channels:
         with ThreadPoolExecutor(max_workers=4) as pool:
             ch_futs = [pool.submit(in_session(channel_videos), cid, cname)
                        for cid, cname in found_channels[:4]]
         for fut in ch_futs:
             try:
-                sources.append(fut.result()[:12])
+                sources.append(_pick(fut.result(), 3, 4))
             except Exception:
                 pass
-    for name, rows in (account_future.result() if account_future else []):
-        sources.append(rows)
+    if account:
+        sources.append(_pick(account.get("Iscrizioni") or [], 6, 10))
+        sources.append(_pick(account.get("Più tardi") or [], 2, 4))
+        sources.append(_pick(account.get("Mi piace") or [], 1, 3))
+    random.shuffle(sources)
+    here_ids = set()
+    if here and related_future:
+        rel = related_future.result()
+        here_ids = set(v for v, t in rel)
+        sources.insert(0, rel)
     mixed = []
     for i in range(max([len(s) for s in sources] or [0])):
         for s in sources:
             if i < len(s):
                 mixed.append(s[i])
+    # quelli gia' visti in cima nelle ultime aperture vanno in fondo
+    sess = cur()
+    shown = getattr(sess, "home_shown", None)
+    if shown is None:
+        shown = sess.home_shown = deque(maxlen=HOME_SHOWN_MAX)
+    before = set(shown) - here_ids
+    mixed.sort(key=lambda r: r[0] in before)
     out = []
     if mixed:
         if q:
             out.append("<h2>Per te</h2>")
         out.extend(cards(mixed, seen, here))
+        shown.extend(vid for vid, title in mixed[:24])
     elif not q:
         out.append('<p style="grid-column:1/-1">nessuna ricerca recente</p>')
-    print("home: suggerimenti in %.1f s (%d video)" % (time.time() - t0, len(mixed)), flush=True)
+    print("home: suggerimenti in %.1f s (%d video, %d gia' visti in fondo)"
+          % (time.time() - t0, len(mixed), sum(1 for r in mixed if r[0] in before)), flush=True)
     return "".join(out)
 
 
-def home_more_start(sid, q, recent, here):
+def home_more_start(sid, q, recent, here, watched=()):
     """Comincia la griglia in background mentre la pagina fa la ricerca."""
     now = time.time()
     with _more_lock:
         for k in [k for k, v in _more_jobs.items() if now - v[0] > 120]:
             _more_jobs.pop(k, None)
-        _more_jobs[(sid, q)] = (now, _more_pool.submit(in_session(home_more_html), q, list(recent), here))
+        _more_jobs[(sid, q)] = (now, _more_pool.submit(in_session(home_more_html), q, list(recent), here, list(watched)))
 
 
-def home_more_get(sid, q, recent, here):
+def home_more_get(sid, q, recent, here, watched=()):
     with _more_lock:
         job = _more_jobs.pop((sid, q), None)
     if job:
@@ -223,7 +290,7 @@ def home_more_get(sid, q, recent, here):
             return job[1].result(timeout=150)
         except Exception as e:
             print("home: suggerimenti non riusciti:", e, flush=True)
-    return home_more_html(q, recent, here)
+    return home_more_html(q, recent, here, watched)
 
 def viewers(n):
     try:
@@ -356,8 +423,11 @@ class Handler(BaseHTTPRequestHandler):
             q = (parse_qs(u.query).get("q") or [""])[0]
             recent = push_recent(q, recent_from_cookie(self.headers.get("Cookie")))
             here = yt_here()
+            # i video guardati (solo id, nel cookie del browser) servono a pescare
+            # suggerimenti anche da cose viste giorni fa
+            watched = push_watched(here, watched_from_cookie(self.headers.get("Cookie")))
             admin = self.who == "admin"
-            home_more_start(cur().sid, q, recent, here)
+            home_more_start(cur().sid, q, recent, here, watched)
             items = []
             seen = set()
             if q:
@@ -386,6 +456,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Set-Cookie", recent_cookie_header(recent))
+            self.send_header("Set-Cookie", watched_cookie_header(watched))
             self.end_headers()
             self.wfile.write(body.encode("utf-8"))
             return
@@ -394,7 +465,8 @@ class Handler(BaseHTTPRequestHandler):
             q = (parse_qs(u.query).get("q") or [""])[0]
             recent = recent_from_cookie(self.headers.get("Cookie"))
             here = yt_here()
-            body = home_more_get(cur().sid, q, recent, here).encode("utf-8")
+            watched = watched_from_cookie(self.headers.get("Cookie"))
+            body = home_more_get(cur().sid, q, recent, here, watched).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")

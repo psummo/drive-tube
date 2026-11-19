@@ -400,11 +400,17 @@ def _related_fetch(vid):
     return rows
 
 
+ACCOUNT_SECTIONS = ("Iscrizioni", "Più tardi", "Mi piace", "Cronologia")
+
+
 def account_sections():
+    # elenchi lunghi apposta: la home ne pesca a caso anche i video piu' vecchi,
+    # non sempre i primi (sono in cache e si aggiornano in background)
     jobs = [
-        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 1, 45),
-        ("Più tardi", "https://www.youtube.com/playlist?list=WL", 1, 12),
-        ("Mi piace", "https://www.youtube.com/playlist?list=LL", 1, 12),
+        ("Iscrizioni", "https://www.youtube.com/feed/subscriptions", 1, 100),
+        ("Più tardi", "https://www.youtube.com/playlist?list=WL", 1, 60),
+        ("Mi piace", "https://www.youtube.com/playlist?list=LL", 1, 150),
+        ("Cronologia", "https://www.youtube.com/feed/history", 1, 80),
     ]
     out = {}
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -422,7 +428,15 @@ def account_sections():
                 if vid not in have:
                     got.append((vid, title))
                     have.add(vid)
-    return [(name, out.get(name) or []) for name in ("Iscrizioni", "Più tardi", "Mi piace")]
+    return [(name, out.get(name) or []) for name in ACCOUNT_SECTIONS]
+
+
+def similar_to(vid, title):
+    """Video simili a uno di cui si conosce gia' il titolo (es. da "Mi piace"):
+    una sola ricerca, senza chiedere a YouTube i dati del video."""
+    if not title:
+        return related_of(vid)
+    return videos_from_search(title, {vid}, 10)
 
 
 def channel_videos(cid, name=None):
